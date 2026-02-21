@@ -1,0 +1,40 @@
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #0c1424;
+  color: #f5f8ff;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+#renderCanvas {
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  display: block;
+}
+
+.hud {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  background: rgba(8, 16, 30, 0.65);
+  border: 1px solid rgba(160, 200, 255, 0.35);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  backdrop-filter: blur(6px);
+  max-width: 26rem;
+}
+
+.hud h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.hud p {
+  margin: 0.25rem 0;
+  font-size: 0.86rem;
+  opacity: 0.95;
+}
