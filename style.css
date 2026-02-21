@@ -38,3 +38,36 @@ body {
   font-size: 0.86rem;
   opacity: 0.95;
 }
+
+
+.crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.crosshair::before,
+.crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(255,255,255,0.9);
+  box-shadow: 0 0 6px rgba(0,0,0,0.45);
+}
+
+.crosshair::before {
+  left: 7px;
+  top: 1px;
+  width: 2px;
+  height: 14px;
+}
+
+.crosshair::after {
+  left: 1px;
+  top: 7px;
+  width: 14px;
+  height: 2px;
+}
