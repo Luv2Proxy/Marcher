@@ -19,21 +19,12 @@ const tetrahedra = [
 const cornerOffsets = [
   [0, 0, 0],
   [1, 0, 0],
-  [1, 0, 1],
-  [0, 0, 1],
-  [0, 1, 0],
   [1, 1, 0],
+  [0, 1, 0],
+  [0, 0, 1],
+  [1, 0, 1],
   [1, 1, 1],
   [0, 1, 1],
-];
-
-const tetEdges = [
-  [0, 1],
-  [1, 2],
-  [2, 0],
-  [0, 3],
-  [1, 3],
-  [2, 3],
 ];
 
 const statsEl = document.getElementById("stats");
@@ -53,6 +44,38 @@ const terrainHeight = (x, z) => {
   return FIELD_SIZE.y * 0.45 + rolling + mesas;
 };
 
+function createGroundTexture(scene) {
+  const tex = new BABYLON.DynamicTexture("groundTex", { width: 256, height: 256 }, scene, false);
+  const ctx = tex.getContext();
+
+  ctx.fillStyle = "#8d7a64";
+  ctx.fillRect(0, 0, 256, 256);
+
+  for (let i = 0; i < 3200; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const shade = 105 + Math.random() * 55;
+    ctx.fillStyle = `rgba(${shade}, ${shade * 0.9}, ${shade * 0.75}, 0.25)`;
+    ctx.fillRect(x, y, 2, 2);
+  }
+
+  for (let i = 0; i < 350; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const r = 1 + Math.random() * 2;
+    ctx.fillStyle = "rgba(75, 62, 48, 0.35)";
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  tex.update(false);
+  tex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
+  tex.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+  tex.anisotropicFilteringLevel = 8;
+  return tex;
+}
+
 function regenerateField() {
   for (let z = 0; z < FIELD_SIZE.z; z++) {
     for (let y = 0; y < FIELD_SIZE.y; y++) {
@@ -68,7 +91,7 @@ function regenerateField() {
 }
 
 function interpolate(p1, p2, v1, v2) {
-  const t = (ISO_LEVEL - v1) / (v2 - v1 + 1e-6);
+  const t = BABYLON.Scalar.Clamp((ISO_LEVEL - v1) / (v2 - v1 + 1e-6), 0, 1);
   return new BABYLON.Vector3(
     p1.x + (p2.x - p1.x) * t,
     p1.y + (p2.y - p1.y) * t,
@@ -141,6 +164,11 @@ function buildTerrainMesh(scene, mesh) {
   const normals = [];
   BABYLON.VertexData.ComputeNormals(positions, indices, normals);
 
+  const uvs = [];
+  for (let i = 0; i < positions.length; i += 3) {
+    uvs.push(positions[i] * 0.07, positions[i + 2] * 0.07);
+  }
+
   const colors = [];
   for (let i = 0; i < positions.length; i += 3) {
     const y = positions[i + 1];
@@ -154,6 +182,7 @@ function buildTerrainMesh(scene, mesh) {
   vd.positions = positions;
   vd.indices = indices;
   vd.normals = normals;
+  vd.uvs = uvs;
   vd.colors = colors;
 
   if (!mesh) mesh = new BABYLON.Mesh("terrain", scene);
@@ -196,10 +225,17 @@ scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
 scene.fogDensity = 0.008;
 scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
 
-const camera = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(28, 24, -8), scene);
+const camera = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5), scene);
+camera.setTarget(new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.45, FIELD_SIZE.z * 0.6));
 camera.speed = 0.55;
 camera.minZ = 0.1;
 camera.maxZ = 200;
+camera.keysUp = [87];
+camera.keysDown = [83];
+camera.keysLeft = [65];
+camera.keysRight = [68];
+if ("keysUpward" in camera) camera.keysUpward = [32];
+if ("keysDownward" in camera) camera.keysDownward = [17, 67];
 camera.attachControl(canvas, true);
 
 const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
@@ -213,9 +249,11 @@ const shadow = new BABYLON.ShadowGenerator(2048, sun);
 shadow.useExponentialShadowMap = true;
 
 const terrainMaterial = new BABYLON.StandardMaterial("terrainMat", scene);
-terrainMaterial.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
-terrainMaterial.ambientColor = new BABYLON.Color3(0.25, 0.25, 0.25);
+terrainMaterial.specularColor = new BABYLON.Color3(0.06, 0.06, 0.06);
+terrainMaterial.ambientColor = new BABYLON.Color3(0.35, 0.35, 0.35);
 terrainMaterial.useVertexColor = true;
+terrainMaterial.diffuseTexture = createGroundTexture(scene);
+terrainMaterial.diffuseTexture.level = 0.95;
 terrainMaterial.backFaceCulling = false;
 
 const sky = BABYLON.MeshBuilder.CreateSphere("sky", { diameter: 500, sideOrientation: BABYLON.Mesh.BACKSIDE }, scene);
