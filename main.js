@@ -1,7 +1,7 @@
 const canvas = document.getElementById("renderCanvas");
 const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
 
-const FIELD_SIZE = { x: 56, y: 34, z: 56 };
+const FIELD_SIZE = { x: 200, y: 34, z: 200 };
 const CELL_SIZE = 1;
 const ISO_LEVEL = 0;
 
@@ -225,18 +225,34 @@ scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
 scene.fogDensity = 0.008;
 scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
 
-const camera = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5), scene);
-camera.setTarget(new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.45, FIELD_SIZE.z * 0.6));
-camera.speed = 0.55;
+const camera = new BABYLON.UniversalCamera(
+    "freeCam", 
+    new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5), 
+    scene
+);
+
+// Optional: don't auto-target, just fly freely
+// camera.setTarget(new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.45, FIELD_SIZE.z * 0.6));
+
+camera.speed = 1;          // increase movement speed
+camera.angularSensibility = 500; // adjust mouse sensitivity
 camera.minZ = 0.1;
 camera.maxZ = 200;
-camera.keysUp = [87];
-camera.keysDown = [83];
-camera.keysLeft = [65];
-camera.keysRight = [68];
-if ("keysUpward" in camera) camera.keysUpward = [32];
-if ("keysDownward" in camera) camera.keysDownward = [17, 67];
+
+// Movement keys
+camera.keysUp = [87];       // W
+camera.keysDown = [83];     // S
+camera.keysLeft = [65];     // A
+camera.keysRight = [68];    // D
+
+// Vertical movement
+camera.keysUpward = [32];   // Space
+camera.keysDownward = [17, 67]; // Ctrl + C (or any key you like)
+
+// Allow smooth free rotation with mouse
 camera.attachControl(canvas, true);
+camera.applyGravity = false;  // ensures camera doesn't fall if gravity exists
+camera.checkCollisions = false; // no collision with objects
 
 const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
 hemi.intensity = 0.45;
