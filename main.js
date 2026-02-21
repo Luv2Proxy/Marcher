@@ -1,11 +1,14 @@
 const canvas = document.getElementById("renderCanvas");
 const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
 
-const FIELD_SIZE = { x: 200, y: 34, z: 200 };
+const FIELD_SIZE = { x: 56, y: 34, z: 56 };
 const CELL_SIZE = 1;
 const ISO_LEVEL = 0;
+const CHUNK_SIZE = 14;
 
 const field = new Float32Array(FIELD_SIZE.x * FIELD_SIZE.y * FIELD_SIZE.z);
+const chunks = new Map();
+const dirtyChunks = new Set();
 
 const tetrahedra = [
   [0, 5, 1, 6],
@@ -27,9 +30,15 @@ const cornerOffsets = [
   [0, 1, 1],
 ];
 
-const statsEl = document.getElementById("stats");
+const chunkCounts = {
+  x: Math.ceil((FIELD_SIZE.x - 1) / CHUNK_SIZE),
+  y: Math.ceil((FIELD_SIZE.y - 1) / CHUNK_SIZE),
+  z: Math.ceil((FIELD_SIZE.z - 1) / CHUNK_SIZE),
+};
 
+const statsEl = document.getElementById("stats");
 const getIndex = (x, y, z) => x + FIELD_SIZE.x * (y + FIELD_SIZE.y * z);
+const chunkKey = (x, y, z) => `${x},${y},${z}`;
 
 const pseudoNoise = (x, y, z) => {
   const a = Math.sin(x * 0.13 + z * 0.07) * 0.6;
@@ -47,7 +56,6 @@ const terrainHeight = (x, z) => {
 function createGroundTexture(scene) {
   const tex = new BABYLON.DynamicTexture("groundTex", { width: 256, height: 256 }, scene, false);
   const ctx = tex.getContext();
-
   ctx.fillStyle = "#8d7a64";
   ctx.fillRect(0, 0, 256, 256);
 
@@ -105,7 +113,6 @@ function polygonizeTetra(points, values, positions, indices) {
   for (let i = 0; i < 4; i++) {
     (values[i] >= ISO_LEVEL ? inside : outside).push(i);
   }
-
   if (inside.length === 0 || inside.length === 4) return;
 
   const emitTriangle = (a, b, c) => {
@@ -130,23 +137,21 @@ function polygonizeTetra(points, values, positions, indices) {
   const p1 = inside[1];
   const o0 = outside[0];
   const o1 = outside[1];
-
   const a = interpolate(points[p0], points[o0], values[p0], values[o0]);
   const b = interpolate(points[p0], points[o1], values[p0], values[o1]);
   const c = interpolate(points[p1], points[o0], values[p1], values[o0]);
   const d = interpolate(points[p1], points[o1], values[p1], values[o1]);
-
   emitTriangle(a, c, b);
   emitTriangle(b, c, d);
 }
 
-function buildTerrainMesh(scene, mesh) {
+function buildChunkMesh(chunk) {
   const positions = [];
   const indices = [];
 
-  for (let z = 0; z < FIELD_SIZE.z - 1; z++) {
-    for (let y = 0; y < FIELD_SIZE.y - 1; y++) {
-      for (let x = 0; x < FIELD_SIZE.x - 1; x++) {
+  for (let z = chunk.minCell.z; z < chunk.maxCell.z; z++) {
+    for (let y = chunk.minCell.y; y < chunk.maxCell.y; y++) {
+      for (let x = chunk.minCell.x; x < chunk.maxCell.x; x++) {
         const cubePoints = cornerOffsets.map(([ox, oy, oz]) =>
           new BABYLON.Vector3((x + ox) * CELL_SIZE, (y + oy) * CELL_SIZE, (z + oz) * CELL_SIZE),
         );
@@ -165,14 +170,14 @@ function buildTerrainMesh(scene, mesh) {
   BABYLON.VertexData.ComputeNormals(positions, indices, normals);
 
   const uvs = [];
-  for (let i = 0; i < positions.length; i += 3) {
-    uvs.push(positions[i] * 0.07, positions[i + 2] * 0.07);
-  }
-
   const colors = [];
   for (let i = 0; i < positions.length; i += 3) {
-    const y = positions[i + 1];
-    const h = y / FIELD_SIZE.y;
+    const px = positions[i];
+    const py = positions[i + 1];
+    const pz = positions[i + 2];
+    uvs.push(px * 0.07, pz * 0.07);
+
+    const h = py / FIELD_SIZE.y;
     if (h > 0.62) colors.push(0.36, 0.75, 0.39, 1);
     else if (h > 0.44) colors.push(0.53, 0.4, 0.28, 1);
     else colors.push(0.24, 0.25, 0.3, 1);
@@ -184,28 +189,76 @@ function buildTerrainMesh(scene, mesh) {
   vd.normals = normals;
   vd.uvs = uvs;
   vd.colors = colors;
+  vd.applyToMesh(chunk.mesh, true);
 
-  if (!mesh) mesh = new BABYLON.Mesh("terrain", scene);
-  vd.applyToMesh(mesh, true);
-  mesh.isPickable = true;
-  mesh.receiveShadows = true;
+  chunk.mesh.isPickable = true;
+  chunk.mesh.receiveShadows = false;
+  chunk.triangleCount = indices.length / 3;
+}
 
-  statsEl.textContent = `Triangles: ${(indices.length / 3).toLocaleString()} · Brush radius: ${brushRadius.toFixed(1)} · Strength: ${brushStrength.toFixed(2)}`;
+function rebuildDirtyChunks(maxPerFrame = Infinity) {
+  let built = 0;
+  for (const key of dirtyChunks) {
+    const chunk = chunks.get(key);
+    if (!chunk) continue;
+    buildChunkMesh(chunk);
+    dirtyChunks.delete(key);
+    built += 1;
+    if (built >= maxPerFrame) break;
+  }
+}
 
-  return mesh;
+function markAllChunksDirty() {
+  chunks.forEach((_, key) => dirtyChunks.add(key));
+}
+
+function markChunksDirtyByVoxelBounds(min, max) {
+  const cellMin = {
+    x: Math.max(0, min.x - 1),
+    y: Math.max(0, min.y - 1),
+    z: Math.max(0, min.z - 1),
+  };
+  const cellMax = {
+    x: Math.min(FIELD_SIZE.x - 2, max.x),
+    y: Math.min(FIELD_SIZE.y - 2, max.y),
+    z: Math.min(FIELD_SIZE.z - 2, max.z),
+  };
+
+  const minChunk = {
+    x: Math.floor(cellMin.x / CHUNK_SIZE),
+    y: Math.floor(cellMin.y / CHUNK_SIZE),
+    z: Math.floor(cellMin.z / CHUNK_SIZE),
+  };
+  const maxChunk = {
+    x: Math.floor(cellMax.x / CHUNK_SIZE),
+    y: Math.floor(cellMax.y / CHUNK_SIZE),
+    z: Math.floor(cellMax.z / CHUNK_SIZE),
+  };
+
+  for (let cz = minChunk.z; cz <= maxChunk.z; cz++) {
+    for (let cy = minChunk.y; cy <= maxChunk.y; cy++) {
+      for (let cx = minChunk.x; cx <= maxChunk.x; cx++) {
+        dirtyChunks.add(chunkKey(cx, cy, cz));
+      }
+    }
+  }
 }
 
 function modifyField(point, radius, amount) {
-  const minX = Math.max(1, Math.floor(point.x - radius));
-  const maxX = Math.min(FIELD_SIZE.x - 2, Math.ceil(point.x + radius));
-  const minY = Math.max(1, Math.floor(point.y - radius));
-  const maxY = Math.min(FIELD_SIZE.y - 2, Math.ceil(point.y + radius));
-  const minZ = Math.max(1, Math.floor(point.z - radius));
-  const maxZ = Math.min(FIELD_SIZE.z - 2, Math.ceil(point.z + radius));
+  const min = {
+    x: Math.max(1, Math.floor(point.x - radius)),
+    y: Math.max(1, Math.floor(point.y - radius)),
+    z: Math.max(1, Math.floor(point.z - radius)),
+  };
+  const max = {
+    x: Math.min(FIELD_SIZE.x - 2, Math.ceil(point.x + radius)),
+    y: Math.min(FIELD_SIZE.y - 2, Math.ceil(point.y + radius)),
+    z: Math.min(FIELD_SIZE.z - 2, Math.ceil(point.z + radius)),
+  };
 
-  for (let z = minZ; z <= maxZ; z++) {
-    for (let y = minY; y <= maxY; y++) {
-      for (let x = minX; x <= maxX; x++) {
+  for (let z = min.z; z <= max.z; z++) {
+    for (let y = min.y; y <= max.y; y++) {
+      for (let x = min.x; x <= max.x; x++) {
         const dx = x - point.x;
         const dy = y - point.y;
         const dz = z - point.z;
@@ -217,6 +270,49 @@ function modifyField(point, radius, amount) {
       }
     }
   }
+
+  markChunksDirtyByVoxelBounds(min, max);
+}
+
+function createChunks(scene, material) {
+  for (let cz = 0; cz < chunkCounts.z; cz++) {
+    for (let cy = 0; cy < chunkCounts.y; cy++) {
+      for (let cx = 0; cx < chunkCounts.x; cx++) {
+        const minCell = {
+          x: cx * CHUNK_SIZE,
+          y: cy * CHUNK_SIZE,
+          z: cz * CHUNK_SIZE,
+        };
+        const maxCell = {
+          x: Math.min((cx + 1) * CHUNK_SIZE, FIELD_SIZE.x - 1),
+          y: Math.min((cy + 1) * CHUNK_SIZE, FIELD_SIZE.y - 1),
+          z: Math.min((cz + 1) * CHUNK_SIZE, FIELD_SIZE.z - 1),
+        };
+
+        const mesh = new BABYLON.Mesh(`terrain-${cx}-${cy}-${cz}`, scene);
+        mesh.material = material;
+        mesh.metadata = { terrainChunk: true, key: chunkKey(cx, cy, cz) };
+
+        chunks.set(chunkKey(cx, cy, cz), {
+          key: chunkKey(cx, cy, cz),
+          minCell,
+          maxCell,
+          mesh,
+          triangleCount: 0,
+        });
+      }
+    }
+  }
+}
+
+function totalTriangles() {
+  let triangles = 0;
+  chunks.forEach((c) => (triangles += c.triangleCount));
+  return triangles;
+}
+
+function updateStats() {
+  statsEl.textContent = `Triangles: ${totalTriangles().toLocaleString()} · Chunks dirty: ${dirtyChunks.size} · Brush radius: ${brushRadius.toFixed(1)} · Strength: ${brushStrength.toFixed(2)}`;
 }
 
 const scene = new BABYLON.Scene(engine);
@@ -226,51 +322,37 @@ scene.fogDensity = 0.008;
 scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
 
 const camera = new BABYLON.UniversalCamera(
-    "freeCam", 
-    new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5), 
-    scene
+  "cam",
+  new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5),
+  scene,
 );
-
-// Optional: don't auto-target, just fly freely
-// camera.setTarget(new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.45, FIELD_SIZE.z * 0.6));
-
-camera.speed = 1;          // increase movement speed
-camera.angularSensibility = 500; // adjust mouse sensitivity
+camera.setTarget(new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.45, FIELD_SIZE.z * 0.6));
+camera.speed = 0.55;
 camera.minZ = 0.1;
 camera.maxZ = 200;
-
-// Movement keys
-camera.keysUp = [87];       // W
-camera.keysDown = [83];     // S
-camera.keysLeft = [65];     // A
-camera.keysRight = [68];    // D
-
-// Vertical movement
-camera.keysUpward = [32];   // Space
-camera.keysDownward = [17, 67]; // Ctrl + C (or any key you like)
-
-// Allow smooth free rotation with mouse
+camera.keysUp = [87];
+camera.keysDown = [83];
+camera.keysLeft = [65];
+camera.keysRight = [68];
+if ("keysUpward" in camera) camera.keysUpward = [32];
+if ("keysDownward" in camera) camera.keysDownward = [17, 67];
 camera.attachControl(canvas, true);
-camera.applyGravity = false;  // ensures camera doesn't fall if gravity exists
-camera.checkCollisions = false; // no collision with objects
 
 const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
-hemi.intensity = 0.45;
+hemi.intensity = 0.55;
 
 const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.4, -1, 0.2), scene);
 sun.position = new BABYLON.Vector3(70, 100, -40);
-sun.intensity = 1.1;
-
-const shadow = new BABYLON.ShadowGenerator(2048, sun);
-shadow.useExponentialShadowMap = true;
+sun.intensity = 0.8;
 
 const terrainMaterial = new BABYLON.StandardMaterial("terrainMat", scene);
-terrainMaterial.specularColor = new BABYLON.Color3(0.06, 0.06, 0.06);
-terrainMaterial.ambientColor = new BABYLON.Color3(0.35, 0.35, 0.35);
+terrainMaterial.specularColor = new BABYLON.Color3(0.04, 0.04, 0.04);
+terrainMaterial.ambientColor = new BABYLON.Color3(0.45, 0.45, 0.45);
 terrainMaterial.useVertexColor = true;
 terrainMaterial.diffuseTexture = createGroundTexture(scene);
-terrainMaterial.diffuseTexture.level = 0.95;
+terrainMaterial.diffuseTexture.level = 0.9;
 terrainMaterial.backFaceCulling = false;
+terrainMaterial.twoSidedLighting = true;
 
 const sky = BABYLON.MeshBuilder.CreateSphere("sky", { diameter: 500, sideOrientation: BABYLON.Mesh.BACKSIDE }, scene);
 const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
@@ -282,9 +364,9 @@ let brushRadius = 2.7;
 let brushStrength = 1.05;
 
 regenerateField();
-let terrain = buildTerrainMesh(scene);
-terrain.material = terrainMaterial;
-shadow.addShadowCaster(terrain);
+createChunks(scene, terrainMaterial);
+markAllChunksDirty();
+rebuildDirtyChunks(Infinity);
 
 let isMining = false;
 let isBuilding = false;
@@ -310,10 +392,10 @@ window.addEventListener("keydown", (event) => {
   if (key === "x") brushStrength = Math.min(3, brushStrength + 0.1);
   if (key === "r") {
     regenerateField();
-    buildTerrainMesh(scene, terrain);
+    markAllChunksDirty();
+    rebuildDirtyChunks(Infinity);
   }
-
-  statsEl.textContent = `Triangles: ${(terrain.getTotalIndices() / 3).toLocaleString()} · Brush radius: ${brushRadius.toFixed(1)} · Strength: ${brushStrength.toFixed(2)}`;
+  updateStats();
 });
 
 window.addEventListener("keyup", (event) => {
@@ -324,17 +406,20 @@ scene.onBeforeRenderObservable.add(() => {
   const baseSpeed = scene.getEngine().isPointerLock ? 0.68 : 0.55;
   camera.speed = sprinting ? baseSpeed * 2 : baseSpeed;
 
-  if (!isMining && !isBuilding) return;
-  const pick = scene.pick(scene.pointerX, scene.pointerY, (mesh) => mesh === terrain);
-  if (!pick?.hit || !pick.pickedPoint) return;
+  if (isMining || isBuilding) {
+    const pick = scene.pick(scene.pointerX, scene.pointerY, (mesh) => mesh?.metadata?.terrainChunk === true);
+    if (pick?.hit && pick.pickedPoint) {
+      const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
+      const offsetPoint = isBuilding
+        ? pick.pickedPoint.add(normal.scale(0.8))
+        : pick.pickedPoint.subtract(normal.scale(0.45));
 
-  const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
-  const offsetPoint = isBuilding
-    ? pick.pickedPoint.add(normal.scale(0.8))
-    : pick.pickedPoint.subtract(normal.scale(0.45));
+      modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
+    }
+  }
 
-  modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
-  buildTerrainMesh(scene, terrain);
+  rebuildDirtyChunks(2);
+  updateStats();
 });
 
 engine.runRenderLoop(() => scene.render());
