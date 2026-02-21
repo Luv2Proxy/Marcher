@@ -9,6 +9,7 @@ const CHUNK_SIZE = 14;
 const field = new Float32Array(FIELD_SIZE.x * FIELD_SIZE.y * FIELD_SIZE.z);
 const chunks = new Map();
 const dirtyChunks = new Set();
+const pressed = new Set();
 
 const tetrahedra = [
   [0, 5, 1, 6],
@@ -39,68 +40,6 @@ const chunkCounts = {
 const statsEl = document.getElementById("stats");
 const getIndex = (x, y, z) => x + FIELD_SIZE.x * (y + FIELD_SIZE.y * z);
 const chunkKey = (x, y, z) => `${x},${y},${z}`;
-
-const playerRadius = 0.35;
-const playerHeight = 1.75;
-const gravity = 26;
-const jumpSpeed = 8.8;
-let verticalVelocity = 0;
-let onGround = false;
-
-const clamp = (v, mn, mx) => Math.max(mn, Math.min(mx, v));
-
-function sampleDensity(x, y, z) {
-  const fx = clamp(x, 0, FIELD_SIZE.x - 1.001);
-  const fy = clamp(y, 0, FIELD_SIZE.y - 1.001);
-  const fz = clamp(z, 0, FIELD_SIZE.z - 1.001);
-
-  const x0 = Math.floor(fx);
-  const y0 = Math.floor(fy);
-  const z0 = Math.floor(fz);
-  const x1 = Math.min(x0 + 1, FIELD_SIZE.x - 1);
-  const y1 = Math.min(y0 + 1, FIELD_SIZE.y - 1);
-  const z1 = Math.min(z0 + 1, FIELD_SIZE.z - 1);
-
-  const tx = fx - x0;
-  const ty = fy - y0;
-  const tz = fz - z0;
-
-  const c000 = field[getIndex(x0, y0, z0)];
-  const c100 = field[getIndex(x1, y0, z0)];
-  const c010 = field[getIndex(x0, y1, z0)];
-  const c110 = field[getIndex(x1, y1, z0)];
-  const c001 = field[getIndex(x0, y0, z1)];
-  const c101 = field[getIndex(x1, y0, z1)];
-  const c011 = field[getIndex(x0, y1, z1)];
-  const c111 = field[getIndex(x1, y1, z1)];
-
-  const c00 = c000 * (1 - tx) + c100 * tx;
-  const c10 = c010 * (1 - tx) + c110 * tx;
-  const c01 = c001 * (1 - tx) + c101 * tx;
-  const c11 = c011 * (1 - tx) + c111 * tx;
-
-  const c0 = c00 * (1 - ty) + c10 * ty;
-  const c1 = c01 * (1 - ty) + c11 * ty;
-  return c0 * (1 - tz) + c1 * tz;
-}
-
-function collidesAt(pos) {
-  const footY = pos.y - playerHeight;
-  const headY = pos.y - 0.1;
-  const probes = [
-    [0, 0],
-    [playerRadius, 0],
-    [-playerRadius, 0],
-    [0, playerRadius],
-    [0, -playerRadius],
-  ];
-
-  for (const [ox, oz] of probes) {
-    if (sampleDensity(pos.x + ox, footY, pos.z + oz) >= ISO_LEVEL) return true;
-    if (sampleDensity(pos.x + ox, headY, pos.z + oz) >= ISO_LEVEL) return true;
-  }
-  return false;
-}
 
 const pseudoNoise = (x, y, z) => {
   const a = Math.sin(x * 0.13 + z * 0.07) * 0.6;
@@ -207,7 +146,7 @@ function polygonizeTetra(points, values, positions, indices) {
   emitTriangle(b, c, d);
 }
 
-function buildChunkMesh(chunk) {
+function buildChunkMesh(chunk, scene) {
   const positions = [];
   const indices = [];
 
@@ -256,14 +195,27 @@ function buildChunkMesh(chunk) {
   chunk.mesh.isPickable = true;
   chunk.mesh.receiveShadows = false;
   chunk.triangleCount = indices.length / 3;
+
+  if (chunk.physicsBody) {
+    chunk.physicsBody.dispose();
+    chunk.physicsBody = null;
+  }
+  if (indices.length > 0) {
+    chunk.physicsBody = new BABYLON.PhysicsAggregate(
+      chunk.mesh,
+      BABYLON.PhysicsShapeType.MESH,
+      { mass: 0, friction: 1, restitution: 0 },
+      scene,
+    );
+  }
 }
 
-function rebuildDirtyChunks(maxPerFrame = Infinity) {
+function rebuildDirtyChunks(scene, maxPerFrame = Infinity) {
   let built = 0;
   for (const key of dirtyChunks) {
     const chunk = chunks.get(key);
     if (!chunk) continue;
-    buildChunkMesh(chunk);
+    buildChunkMesh(chunk, scene);
     dirtyChunks.delete(key);
     built += 1;
     if (built >= maxPerFrame) break;
@@ -360,6 +312,7 @@ function createChunks(scene, material) {
           minCell,
           maxCell,
           mesh,
+          physicsBody: null,
           triangleCount: 0,
         });
       }
@@ -373,142 +326,157 @@ function totalTriangles() {
   return triangles;
 }
 
-function updateStats() {
+function updateStats(brushRadius, brushStrength) {
   statsEl.textContent = `Triangles: ${totalTriangles().toLocaleString()} · Chunks dirty: ${dirtyChunks.size} · Brush radius: ${brushRadius.toFixed(1)} · Strength: ${brushStrength.toFixed(2)}`;
 }
 
-const scene = new BABYLON.Scene(engine);
-scene.clearColor = new BABYLON.Color4(0.53, 0.74, 0.93, 1);
-scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
-scene.fogDensity = 0.008;
-scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
+async function createScene() {
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0.53, 0.74, 0.93, 1);
+  scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+  scene.fogDensity = 0.008;
+  scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
 
-const camera = new BABYLON.UniversalCamera(
-  "cam",
-  new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5),
-  scene,
-);
-camera.setTarget(new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.45, FIELD_SIZE.z * 0.6));
-camera.speed = 0.55;
-camera.minZ = 0.1;
-camera.maxZ = 200;
-camera.keysUp = [87];
-camera.keysDown = [83];
-camera.keysLeft = [65];
-camera.keysRight = [68];
-camera.attachControl(canvas, true);
+  const havokInstance = await HavokPhysics();
+  const havokPlugin = new BABYLON.HavokPlugin(true, havokInstance);
+  scene.enablePhysics(new BABYLON.Vector3(0, -24, 0), havokPlugin);
 
-const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
-hemi.intensity = 0.55;
+  const camera = new BABYLON.UniversalCamera(
+    "cam",
+    new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5),
+    scene,
+  );
+  camera.setTarget(new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.45, FIELD_SIZE.z * 0.6));
+  camera.minZ = 0.1;
+  camera.maxZ = 200;
+  camera.speed = 0;
+  camera.inertia = 0;
+  camera.attachControl(canvas, true);
 
-const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.4, -1, 0.2), scene);
-sun.position = new BABYLON.Vector3(70, 100, -40);
-sun.intensity = 0.8;
+  const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
+  hemi.intensity = 0.55;
 
-const terrainMaterial = new BABYLON.StandardMaterial("terrainMat", scene);
-terrainMaterial.specularColor = new BABYLON.Color3(0.04, 0.04, 0.04);
-terrainMaterial.ambientColor = new BABYLON.Color3(0.45, 0.45, 0.45);
-terrainMaterial.useVertexColor = true;
-terrainMaterial.diffuseTexture = createGroundTexture(scene);
-terrainMaterial.diffuseTexture.level = 0.9;
-terrainMaterial.backFaceCulling = false;
-terrainMaterial.twoSidedLighting = true;
+  const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.4, -1, 0.2), scene);
+  sun.position = new BABYLON.Vector3(70, 100, -40);
+  sun.intensity = 0.8;
 
-const sky = BABYLON.MeshBuilder.CreateSphere("sky", { diameter: 500, sideOrientation: BABYLON.Mesh.BACKSIDE }, scene);
-const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
-skyMat.disableLighting = true;
-skyMat.emissiveColor = new BABYLON.Color3(0.42, 0.66, 0.95);
-sky.material = skyMat;
+  const terrainMaterial = new BABYLON.StandardMaterial("terrainMat", scene);
+  terrainMaterial.specularColor = new BABYLON.Color3(0.04, 0.04, 0.04);
+  terrainMaterial.ambientColor = new BABYLON.Color3(0.45, 0.45, 0.45);
+  terrainMaterial.useVertexColor = true;
+  terrainMaterial.diffuseTexture = createGroundTexture(scene);
+  terrainMaterial.diffuseTexture.level = 0.9;
+  terrainMaterial.backFaceCulling = false;
+  terrainMaterial.twoSidedLighting = true;
 
-let brushRadius = 2.7;
-let brushStrength = 1.05;
+  const sky = BABYLON.MeshBuilder.CreateSphere("sky", { diameter: 500, sideOrientation: BABYLON.Mesh.BACKSIDE }, scene);
+  const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
+  skyMat.disableLighting = true;
+  skyMat.emissiveColor = new BABYLON.Color3(0.42, 0.66, 0.95);
+  sky.material = skyMat;
 
-regenerateField();
-createChunks(scene, terrainMaterial);
-markAllChunksDirty();
-rebuildDirtyChunks(Infinity);
+  const player = BABYLON.MeshBuilder.CreateCapsule("playerBody", { height: 1.8, radius: 0.34 }, scene);
+  player.isVisible = false;
+  player.position = new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5);
+  const playerBody = new BABYLON.PhysicsAggregate(
+    player,
+    BABYLON.PhysicsShapeType.CAPSULE,
+    { mass: 70, restitution: 0, friction: 0.2 },
+    scene,
+  );
 
-let isMining = false;
-let isBuilding = false;
-let sprinting = false;
+  let brushRadius = 2.7;
+  let brushStrength = 1.05;
+  let isMining = false;
+  let isBuilding = false;
+  let sprinting = false;
 
-window.addEventListener("contextmenu", (event) => event.preventDefault());
-window.addEventListener("pointerdown", (event) => {
-  if (event.button === 0) isMining = true;
-  if (event.button === 2) isBuilding = true;
-  canvas.requestPointerLock();
-});
-window.addEventListener("pointerup", (event) => {
-  if (event.button === 0) isMining = false;
-  if (event.button === 2) isBuilding = false;
-});
+  regenerateField();
+  createChunks(scene, terrainMaterial);
+  markAllChunksDirty();
+  rebuildDirtyChunks(scene, Infinity);
 
-window.addEventListener("keydown", (event) => {
-  const key = event.key.toLowerCase();
-  if (key === "shift") sprinting = true;
-  if (key === " " && onGround) {
-    verticalVelocity = jumpSpeed;
-    onGround = false;
-  }
-  if (key === "q") brushRadius = Math.max(1, brushRadius - 0.35);
-  if (key === "e") brushRadius = Math.min(8, brushRadius + 0.35);
-  if (key === "z") brushStrength = Math.max(0.2, brushStrength - 0.1);
-  if (key === "x") brushStrength = Math.min(3, brushStrength + 0.1);
-  if (key === "r") {
-    regenerateField();
-    markAllChunksDirty();
-    rebuildDirtyChunks(Infinity);
-  }
-  updateStats();
-});
+  window.addEventListener("contextmenu", (event) => event.preventDefault());
+  window.addEventListener("pointerdown", (event) => {
+    if (event.button === 0) isMining = true;
+    if (event.button === 2) isBuilding = true;
+    canvas.requestPointerLock();
+  });
+  window.addEventListener("pointerup", (event) => {
+    if (event.button === 0) isMining = false;
+    if (event.button === 2) isBuilding = false;
+  });
 
-window.addEventListener("keyup", (event) => {
-  if (event.key.toLowerCase() === "shift") sprinting = false;
-});
-
-scene.onBeforeRenderObservable.add(() => {
-  const dt = engine.getDeltaTime() * 0.001;
-  const baseSpeed = scene.getEngine().isPointerLock ? 0.68 : 0.55;
-  camera.speed = sprinting ? baseSpeed * 2 : baseSpeed;
-
-  const prevPos = camera.position.clone();
-  verticalVelocity -= gravity * dt;
-  camera.position.y += verticalVelocity * dt;
-
-  if (collidesAt(camera.position)) {
-    if (verticalVelocity <= 0) {
-      onGround = true;
-      verticalVelocity = 0;
-      for (let i = 0; i < 10 && collidesAt(camera.position); i++) camera.position.y += 0.05;
-    } else {
-      verticalVelocity = 0;
-      camera.position.y = prevPos.y;
+  window.addEventListener("keydown", (event) => {
+    const key = event.key.toLowerCase();
+    pressed.add(key);
+    if (key === "shift") sprinting = true;
+    if (key === "q") brushRadius = Math.max(1, brushRadius - 0.35);
+    if (key === "e") brushRadius = Math.min(8, brushRadius + 0.35);
+    if (key === "z") brushStrength = Math.max(0.2, brushStrength - 0.1);
+    if (key === "x") brushStrength = Math.min(3, brushStrength + 0.1);
+    if (key === "r") {
+      regenerateField();
+      markAllChunksDirty();
+      rebuildDirtyChunks(scene, Infinity);
     }
-  } else {
-    onGround = false;
-  }
-
-  const horizontalTest = new BABYLON.Vector3(camera.position.x, prevPos.y, camera.position.z);
-  if (collidesAt(horizontalTest)) {
-    camera.position.x = prevPos.x;
-    camera.position.z = prevPos.z;
-  }
-
-  if (isMining || isBuilding) {
-    const pick = scene.pick(scene.pointerX, scene.pointerY, (mesh) => mesh?.metadata?.terrainChunk === true);
-    if (pick?.hit && pick.pickedPoint) {
-      const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
-      const offsetPoint = isBuilding
-        ? pick.pickedPoint.add(normal.scale(0.8))
-        : pick.pickedPoint.subtract(normal.scale(0.45));
-
-      modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
+    if (key === " ") {
+      const ray = new BABYLON.Ray(player.position.clone(), BABYLON.Vector3.Down(), 1.05);
+      const hit = scene.pickWithRay(ray, (mesh) => mesh?.metadata?.terrainChunk === true);
+      if (hit?.hit) playerBody.body.applyImpulse(new BABYLON.Vector3(0, 260, 0), player.position);
     }
-  }
+    updateStats(brushRadius, brushStrength);
+  });
 
-  rebuildDirtyChunks(2);
-  updateStats();
+  window.addEventListener("keyup", (event) => {
+    const key = event.key.toLowerCase();
+    pressed.delete(key);
+    if (key === "shift") sprinting = false;
+  });
+
+  scene.onBeforeRenderObservable.add(() => {
+    const baseSpeed = sprinting ? 12 : 6.2;
+    const forward = camera.getDirection(BABYLON.Axis.Z).normalize();
+    const right = camera.getDirection(BABYLON.Axis.X).normalize();
+    forward.y = 0;
+    right.y = 0;
+    forward.normalize();
+    right.normalize();
+
+    const move = new BABYLON.Vector3(0, 0, 0);
+    if (pressed.has("w")) move.addInPlace(forward);
+    if (pressed.has("s")) move.subtractInPlace(forward);
+    if (pressed.has("a")) move.subtractInPlace(right);
+    if (pressed.has("d")) move.addInPlace(right);
+    if (move.lengthSquared() > 0.0001) move.normalize().scaleInPlace(baseSpeed);
+
+    const currentVel = playerBody.body.getLinearVelocity();
+    playerBody.body.setAngularVelocity(BABYLON.Vector3.Zero());
+    playerBody.body.setLinearVelocity(new BABYLON.Vector3(move.x, currentVel.y, move.z));
+
+    camera.position.copyFrom(player.position).addInPlace(new BABYLON.Vector3(0, 0.62, 0));
+
+    if (isMining || isBuilding) {
+      const pick = scene.pick(scene.pointerX, scene.pointerY, (mesh) => mesh?.metadata?.terrainChunk === true);
+      if (pick?.hit && pick.pickedPoint) {
+        const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
+        const offsetPoint = isBuilding
+          ? pick.pickedPoint.add(normal.scale(0.8))
+          : pick.pickedPoint.subtract(normal.scale(0.45));
+
+        modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
+      }
+    }
+
+    rebuildDirtyChunks(scene, 2);
+    updateStats(brushRadius, brushStrength);
+  });
+
+  return scene;
+}
+
+createScene().then((scene) => {
+  engine.runRenderLoop(() => scene.render());
 });
 
-engine.runRenderLoop(() => scene.render());
 window.addEventListener("resize", () => engine.resize());
