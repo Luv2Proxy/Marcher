@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Marcher — Babylon.js Marching Cubes Explorer</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <canvas id="renderCanvas"></canvas>
+    <div class="crosshair" aria-hidden="true"></div>
+    <div class="hud">
+      <h1>Marcher</h1>
+      <p><b>WASD</b> move · <b>Shift</b> sprint · <b>Space</b> jump</p>
+      <p><b>Mouse</b> look · <b>Left click</b> mine · <b>Right click</b> build</p>
+      <p><b>Q/E</b> brush size · <b>Z/X</b> strength · <b>R</b> regenerate</p>
+      <p id="stats"></p>
+    </div>
+
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/havok/HavokPhysics_umd.js"></script>
+    <script src="main.js" type="module"></script>
+  </body>
+</html>
