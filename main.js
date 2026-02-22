@@ -167,6 +167,16 @@ function buildChunkMesh(chunk, scene) {
     }
   }
 
+  if (indices.length === 0) {
+    chunk.mesh.setEnabled(false);
+    chunk.triangleCount = 0;
+    if (chunk.physicsBody) {
+      chunk.physicsBody.dispose();
+      chunk.physicsBody = null;
+    }
+    return;
+  }
+
   const normals = [];
   BABYLON.VertexData.ComputeNormals(positions, indices, normals);
 
@@ -192,6 +202,7 @@ function buildChunkMesh(chunk, scene) {
   vd.colors = colors;
   vd.applyToMesh(chunk.mesh, true);
 
+  chunk.mesh.setEnabled(true);
   chunk.mesh.isPickable = true;
   chunk.mesh.receiveShadows = false;
   chunk.triangleCount = indices.length / 3;
@@ -471,10 +482,13 @@ async function createScene() {
           : pick.pickedPoint.subtract(normal.scale(0.45));
 
         modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
+
+        const nearPlayer = BABYLON.Vector3.Distance(offsetPoint, player.position) < 3.2;
+        if (isBuilding && nearPlayer) rebuildDirtyChunks(scene, Infinity);
       }
     }
 
-    rebuildDirtyChunks(scene, 2);
+    rebuildDirtyChunks(scene, isMining || isBuilding ? 8 : 2);
     updateStats(brushRadius, brushStrength);
   });
 
