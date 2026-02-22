@@ -41,6 +41,82 @@ const statsEl = document.getElementById("stats");
 const getIndex = (x, y, z) => x + FIELD_SIZE.x * (y + FIELD_SIZE.y * z);
 const chunkKey = (x, y, z) => `${x},${y},${z}`;
 
+const PLAYER_RADIUS = 0.34;
+const PLAYER_HEIGHT = 1.8;
+const PLAYER_HALF_HEIGHT = PLAYER_HEIGHT * 0.5;
+
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+function sampleDensity(x, y, z) {
+  const fx = clamp(x, 0, FIELD_SIZE.x - 1.001);
+  const fy = clamp(y, 0, FIELD_SIZE.y - 1.001);
+  const fz = clamp(z, 0, FIELD_SIZE.z - 1.001);
+
+  const x0 = Math.floor(fx);
+  const y0 = Math.floor(fy);
+  const z0 = Math.floor(fz);
+  const x1 = Math.min(x0 + 1, FIELD_SIZE.x - 1);
+  const y1 = Math.min(y0 + 1, FIELD_SIZE.y - 1);
+  const z1 = Math.min(z0 + 1, FIELD_SIZE.z - 1);
+
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const tz = fz - z0;
+
+  const c000 = field[getIndex(x0, y0, z0)];
+  const c100 = field[getIndex(x1, y0, z0)];
+  const c010 = field[getIndex(x0, y1, z0)];
+  const c110 = field[getIndex(x1, y1, z0)];
+  const c001 = field[getIndex(x0, y0, z1)];
+  const c101 = field[getIndex(x1, y0, z1)];
+  const c011 = field[getIndex(x0, y1, z1)];
+  const c111 = field[getIndex(x1, y1, z1)];
+
+  const c00 = c000 * (1 - tx) + c100 * tx;
+  const c10 = c010 * (1 - tx) + c110 * tx;
+  const c01 = c001 * (1 - tx) + c101 * tx;
+  const c11 = c011 * (1 - tx) + c111 * tx;
+
+  const c0 = c00 * (1 - ty) + c10 * ty;
+  const c1 = c01 * (1 - ty) + c11 * ty;
+  return c0 * (1 - tz) + c1 * tz;
+}
+
+function playerEmbeddedInTerrain(playerPos) {
+  const sampleYs = [
+    playerPos.y - PLAYER_HALF_HEIGHT + 0.08,
+    playerPos.y - PLAYER_HALF_HEIGHT + 0.55,
+    playerPos.y + PLAYER_HALF_HEIGHT - 0.2,
+  ];
+  const sampleOffsets = [
+    [0, 0],
+    [PLAYER_RADIUS, 0],
+    [-PLAYER_RADIUS, 0],
+    [0, PLAYER_RADIUS],
+    [0, -PLAYER_RADIUS],
+  ];
+
+  for (const y of sampleYs) {
+    for (const [ox, oz] of sampleOffsets) {
+      if (sampleDensity(playerPos.x + ox, y, playerPos.z + oz) >= ISO_LEVEL) return true;
+    }
+  }
+
+  return false;
+}
+
+function pushPlayerAboveTerrain(player, playerBody) {
+  if (!playerEmbeddedInTerrain(player.position)) return;
+
+  for (let i = 0; i < 40; i++) {
+    player.position.y += 0.12;
+    if (!playerEmbeddedInTerrain(player.position)) {
+      playerBody.body.setLinearVelocity(new BABYLON.Vector3(0, Math.max(1.5, playerBody.body.getLinearVelocity().y), 0));
+      return;
+    }
+  }
+}
+
 const pseudoNoise = (x, y, z) => {
   const a = Math.sin(x * 0.13 + z * 0.07) * 0.6;
   const b = Math.cos(z * 0.11 - x * 0.09) * 0.45;
@@ -392,7 +468,7 @@ async function createScene() {
     return scene.pick(x, y, predicate, false, camera);
   };
 
-  const player = BABYLON.MeshBuilder.CreateCapsule("playerBody", { height: 1.8, radius: 0.34 }, scene);
+  const player = BABYLON.MeshBuilder.CreateCapsule("playerBody", { height: PLAYER_HEIGHT, radius: PLAYER_RADIUS }, scene);
   player.isVisible = false;
   player.position = new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5);
   const playerBody = new BABYLON.PhysicsAggregate(
@@ -484,11 +560,15 @@ async function createScene() {
         modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
 
         const nearPlayer = BABYLON.Vector3.Distance(offsetPoint, player.position) < 3.2;
-        if (isBuilding && nearPlayer) rebuildDirtyChunks(scene, Infinity);
+        if (isBuilding && nearPlayer) {
+          rebuildDirtyChunks(scene, Infinity);
+          pushPlayerAboveTerrain(player, playerBody);
+        }
       }
     }
 
     rebuildDirtyChunks(scene, isMining || isBuilding ? 8 : 2);
+    pushPlayerAboveTerrain(player, playerBody);
     updateStats(brushRadius, brushStrength);
   });
 
