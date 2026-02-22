@@ -375,6 +375,12 @@ async function createScene() {
   skyMat.emissiveColor = new BABYLON.Color3(0.42, 0.66, 0.95);
   sky.material = skyMat;
 
+  const pickFromCrosshair = (predicate) => {
+    const x = engine.getRenderWidth() * 0.5;
+    const y = engine.getRenderHeight() * 0.5;
+    return scene.pick(x, y, predicate, false, camera);
+  };
+
   const player = BABYLON.MeshBuilder.CreateCapsule("playerBody", { height: 1.8, radius: 0.34 }, scene);
   player.isVisible = false;
   player.position = new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5);
@@ -457,7 +463,7 @@ async function createScene() {
     camera.position.copyFrom(player.position).addInPlace(new BABYLON.Vector3(0, 0.62, 0));
 
     if (isMining || isBuilding) {
-      const pick = scene.pick(scene.pointerX, scene.pointerY, (mesh) => mesh?.metadata?.terrainChunk === true);
+      const pick = pickFromCrosshair((mesh) => mesh?.metadata?.terrainChunk === true);
       if (pick?.hit && pick.pickedPoint) {
         const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
         const offsetPoint = isBuilding
