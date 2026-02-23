@@ -68,7 +68,7 @@ function collidesAt(pos) {
 const pseudoNoise = (x, y, z) => {
   const a = Math.sin(x * 0.13 + z * 0.07) * 0.6;
   const b = Math.cos(z * 0.11 - x * 0.09) * 0.45;
-@ -334,8 +396,6 @@ camera.keysUp = [87];
+camera.keysUp = [87];
 camera.keysDown = [83];
 camera.keysLeft = [65];
 camera.keysRight = [68];
@@ -77,7 +77,7 @@ if ("keysDownward" in camera) camera.keysDownward = [17, 67];
 camera.attachControl(canvas, true);
 
 const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
-@ -386,6 +446,10 @@ window.addEventListener("pointerup", (event) => {
+window.addEventListener("pointerup", (event) => {
 window.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
   if (key === "shift") sprinting = true;
@@ -88,7 +88,7 @@ window.addEventListener("keydown", (event) => {
   if (key === "q") brushRadius = Math.max(1, brushRadius - 0.35);
   if (key === "e") brushRadius = Math.min(8, brushRadius + 0.35);
   if (key === "z") brushStrength = Math.max(0.2, brushStrength - 0.1);
-@ -403,25 +467,49 @@
+
 });
 
 scene.onBeforeRenderObservable.add(() => {
