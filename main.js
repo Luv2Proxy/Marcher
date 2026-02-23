@@ -84,21 +84,34 @@ function sampleDensity(x, y, z) {
   return c0 * (1 - tz) + c1 * tz;
 }
 
-function collidesAt(pos) {
-  const footY = pos.y - playerHeight;
-  const headY = pos.y - 0.1;
-  const probes = [
-    [0, 0],
-    [playerRadius, 0],
-    [-playerRadius, 0],
-    [0, playerRadius],
-    [0, -playerRadius],
-  ];
+function capsuleCollides(pos) {
+  const steps = 6; // vertical samples
+  const bottom = pos.y - playerHeight;
+  const top = pos.y - 0.1;
 
-  for (const [ox, oz] of probes) {
-    if (sampleDensity(pos.x + ox, footY, pos.z + oz) >= ISO_LEVEL) return true;
-    if (sampleDensity(pos.x + ox, headY, pos.z + oz) >= ISO_LEVEL) return true;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const y = bottom + (top - bottom) * t;
+
+    const probes = [
+      [0, 0],
+      [playerRadius, 0],
+      [-playerRadius, 0],
+      [0, playerRadius],
+      [0, -playerRadius],
+      [playerRadius * 0.7, playerRadius * 0.7],
+      [-playerRadius * 0.7, playerRadius * 0.7],
+      [playerRadius * 0.7, -playerRadius * 0.7],
+      [-playerRadius * 0.7, -playerRadius * 0.7],
+    ];
+
+    for (const [ox, oz] of probes) {
+      if (sampleDensity(pos.x + ox, y, pos.z + oz) >= ISO_LEVEL) {
+        return true;
+      }
+    }
   }
+
   return false;
 }
 
@@ -468,36 +481,76 @@ window.addEventListener("keyup", (event) => {
 
 scene.onBeforeRenderObservable.add(() => {
   const dt = engine.getDeltaTime() * 0.001;
-  const baseSpeed = scene.getEngine().isPointerLock ? 0.68 : 0.55;
-  camera.speed = sprinting ? baseSpeed * 2 : baseSpeed;
 
-  const prevPos = camera.position.clone();
+  const baseSpeed = scene.getEngine().isPointerLock ? 6.5 : 4.5;
+  const moveSpeed = sprinting ? baseSpeed * 1.8 : baseSpeed;
+
+  const input = camera.getDirection(BABYLON.Vector3.Forward()).scale(camera._keys.length ? moveSpeed * dt : 0);
+
+  const prev = camera.position.clone();
+
+  // --- Gravity ---
   verticalVelocity -= gravity * dt;
   camera.position.y += verticalVelocity * dt;
 
-  if (collidesAt(camera.position)) {
+  // --- Vertical Resolve ---
+  if (capsuleCollides(camera.position)) {
     if (verticalVelocity <= 0) {
+      // landed
       onGround = true;
       verticalVelocity = 0;
-      for (let i = 0; i < 10 && collidesAt(camera.position); i++) camera.position.y += 0.05;
+
+      // snap upward slightly
+      for (let i = 0; i < 12 && capsuleCollides(camera.position); i++) {
+        camera.position.y += 0.04;
+      }
     } else {
+      // head hit
       verticalVelocity = 0;
-      camera.position.y = prevPos.y;
+      camera.position.y = prev.y;
     }
   } else {
     onGround = false;
   }
 
-  const horizontalTest = new BABYLON.Vector3(camera.position.x, prevPos.y, camera.position.z);
-  if (collidesAt(horizontalTest)) {
-    camera.position.x = prevPos.x;
-    camera.position.z = prevPos.z;
+  // --- Horizontal Axis Separation (STRONG WALL COLLISION) ---
+  const desired = camera.position.clone();
+
+  // X axis
+  camera.position.x = desired.x;
+  camera.position.z = prev.z;
+  if (capsuleCollides(camera.position)) {
+    // try step-up
+    const stepHeight = 0.35;
+    camera.position.y += stepHeight;
+    if (!capsuleCollides(camera.position)) {
+      // stepped
+    } else {
+      camera.position.y -= stepHeight;
+      camera.position.x = prev.x;
+    }
   }
 
+  // Z axis
+  camera.position.x = camera.position.x;
+  camera.position.z = desired.z;
+  if (capsuleCollides(camera.position)) {
+    const stepHeight = 0.35;
+    camera.position.y += stepHeight;
+    if (!capsuleCollides(camera.position)) {
+      // stepped
+    } else {
+      camera.position.y -= stepHeight;
+      camera.position.z = prev.z;
+    }
+  }
+
+  // --- Mining / Building ---
   if (isMining || isBuilding) {
-    const pick = scene.pick(scene.pointerX, scene.pointerY, (mesh) => mesh?.metadata?.terrainChunk === true);
+    const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => m?.metadata?.terrainChunk);
     if (pick?.hit && pick.pickedPoint) {
       const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
+
       const offsetPoint = isBuilding
         ? pick.pickedPoint.add(normal.scale(0.8))
         : pick.pickedPoint.subtract(normal.scale(0.45));
