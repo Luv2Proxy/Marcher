@@ -709,7 +709,11 @@ async function createScene() {
     }
   
     // --- APPLY MOVEMENT ---
-    const nextPos = player.position.add(player.velocity.scale(dt));
+    const nextPos = new BABYLON.Vector3(
+      player.position.x + player.velocity.x * dt,
+      player.position.y,
+      player.position.z + player.velocity.z * dt
+    );
   
     // --- STEP HEIGHT CHECK ---
     const horizontalTest = new BABYLON.Vector3(nextPos.x, player.position.y, nextPos.z);
