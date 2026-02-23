@@ -604,9 +604,6 @@ scene.onBeforeRenderObservable.add(() => {
   }
 
   // -------------------------
-  // MINING / BUILDING
-  // -------------------------
-  // -------------------------
   // MINING / BUILDING (True Center Ray)
   // -------------------------
   if (isMining || isBuilding) {
@@ -643,7 +640,6 @@ scene.onBeforeRenderObservable.add(() => {
         isMining ? -brushStrength : brushStrength
       );
     }
-  }
   }
 
   rebuildDirtyChunks(2);
