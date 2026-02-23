@@ -45,7 +45,10 @@ const PLAYER_RADIUS = 0.34;
 const PLAYER_HEIGHT = 1.8;
 const PLAYER_HALF_HEIGHT = PLAYER_HEIGHT * 0.5;
 const PLAYER_EYE_HEIGHT = 0.72;
-const PLAYER_CLEARANCE = 0.08;
+const PLAYER_CLEARANCE = 0.11;
+const COLLISION_SHELL = 0.12;
+const SOFT_CLIP_DENSITY = 0.16;
+const HARD_CLIP_DENSITY = 0.46;
 const GRAVITY = 29;
 const JUMP_SPEED = 9.5;
 
@@ -107,8 +110,8 @@ function findGroundYAt(x, startY, z) {
 function collidesAt(position) {
   const bottom = position.y - PLAYER_HALF_HEIGHT + 0.06;
   const top = position.y + PLAYER_HALF_HEIGHT - 0.05;
-  const rings = [bottom, bottom + (top - bottom) * 0.35, bottom + (top - bottom) * 0.7, top];
-  const radial = PLAYER_RADIUS;
+  const rings = [bottom, bottom + (top - bottom) * 0.25, bottom + (top - bottom) * 0.5, bottom + (top - bottom) * 0.75, top];
+  const radial = PLAYER_RADIUS + COLLISION_SHELL;
   const offsets = [
     [0, 0],
     [radial, 0],
@@ -130,37 +133,64 @@ function collidesAt(position) {
   return false;
 }
 
-function playerEmbeddedInTerrain(playerPos) {
-  const sampleYs = [
-    playerPos.y - PLAYER_HALF_HEIGHT + 0.08,
-    playerPos.y - PLAYER_HALF_HEIGHT + 0.55,
-    playerPos.y + PLAYER_HALF_HEIGHT - 0.2,
-  ];
-  const sampleOffsets = [
+function samplePlayerPenetration(playerPos) {
+  const bottom = playerPos.y - PLAYER_HALF_HEIGHT + 0.07;
+  const top = playerPos.y + PLAYER_HALF_HEIGHT - 0.1;
+  const rings = [bottom, bottom + (top - bottom) * 0.33, bottom + (top - bottom) * 0.66, top];
+  const radial = PLAYER_RADIUS + COLLISION_SHELL * 0.35;
+  const offsets = [
     [0, 0],
-    [PLAYER_RADIUS, 0],
-    [-PLAYER_RADIUS, 0],
-    [0, PLAYER_RADIUS],
-    [0, -PLAYER_RADIUS],
+    [radial, 0],
+    [-radial, 0],
+    [0, radial],
+    [0, -radial],
+    [radial * 0.7, radial * 0.7],
+    [-radial * 0.7, radial * 0.7],
+    [radial * 0.7, -radial * 0.7],
+    [-radial * 0.7, -radial * 0.7],
   ];
 
-  for (const y of sampleYs) {
-    for (const [ox, oz] of sampleOffsets) {
-      if (sampleDensity(playerPos.x + ox, y, playerPos.z + oz) >= ISO_LEVEL) return true;
+  let maxDensity = -Infinity;
+  let insideCount = 0;
+  let samples = 0;
+  for (const y of rings) {
+    for (const [ox, oz] of offsets) {
+      const d = sampleDensity(playerPos.x + ox, y, playerPos.z + oz);
+      maxDensity = Math.max(maxDensity, d);
+      if (d >= ISO_LEVEL) insideCount += 1;
+      samples += 1;
     }
   }
 
-  return false;
+  return {
+    depth: Math.max(0, maxDensity - ISO_LEVEL),
+    coverage: insideCount / samples,
+  };
 }
 
-function pushPlayerAboveTerrain(playerState, boost = 0) {
-  const maxStep = Math.max(0.16, boost * 0.028);
-  const pushStep = Math.min(0.55, maxStep);
-  let lifted = false;
+function pushPlayerAboveTerrain(playerState, boost = 0, dt = 1 / 60) {
+  const penetration = samplePlayerPenetration(playerState.position);
+  const isHardClip = penetration.depth > HARD_CLIP_DENSITY || penetration.coverage > 0.55;
 
-  for (let i = 0; i < 60 && playerEmbeddedInTerrain(playerState.position); i++) {
-    playerState.position.y += pushStep;
-    lifted = true;
+  if (!isHardClip && penetration.depth < SOFT_CLIP_DENSITY && penetration.coverage < 0.16) {
+    return;
+  }
+
+  let pushUp = penetration.depth * 0.085 + penetration.coverage * 0.075 + boost * 0.005;
+  if (!isHardClip) {
+    pushUp = Math.min(pushUp, 0.09);
+  } else {
+    pushUp = Math.min(pushUp + 0.1, 0.28);
+  }
+
+  playerState.position.y += pushUp;
+
+  if (isHardClip) {
+    for (let i = 0; i < 8; i++) {
+      const next = samplePlayerPenetration(playerState.position);
+      if (next.depth < SOFT_CLIP_DENSITY && next.coverage < 0.18) break;
+      playerState.position.y += 0.04;
+    }
   }
 
   const floorY = findGroundYAt(playerState.position.x, playerState.position.y + PLAYER_HALF_HEIGHT + 4, playerState.position.z);
@@ -168,14 +198,12 @@ function pushPlayerAboveTerrain(playerState, boost = 0) {
     const minCenterY = floorY + PLAYER_HALF_HEIGHT + PLAYER_CLEARANCE;
     if (playerState.position.y < minCenterY) {
       playerState.position.y = minCenterY;
-      lifted = true;
     }
   }
 
-  if (lifted) {
-    playerState.verticalVelocity = Math.max(playerState.verticalVelocity, 1.35 + boost * 0.022);
-    playerState.grounded = false;
-  }
+  const pushVel = 1.1 + boost * 0.3;
+  playerState.verticalVelocity = Math.max(playerState.verticalVelocity, pushVel * Math.max(0.6, dt * 60));
+  playerState.grounded = false;
 }
 
 const pseudoNoise = (x, y, z) => {
@@ -617,14 +645,23 @@ async function createScene() {
         modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
 
         if (isBuilding) {
+          const dx = offsetPoint.x - player.position.x;
+          const dz = offsetPoint.z - player.position.z;
+          const nearFeet = dx * dx + dz * dz < Math.pow(PLAYER_RADIUS + brushRadius * 0.7, 2)
+            && offsetPoint.y <= player.position.y + PLAYER_HALF_HEIGHT;
+          if (nearFeet) {
+            player.verticalVelocity = Math.max(player.verticalVelocity, 1.8 + brushStrength * 0.55);
+            player.position.y += 0.02 + brushStrength * 0.008;
+          }
+
           rebuildDirtyChunks(scene, Infinity);
-          pushPlayerAboveTerrain(player, brushStrength);
+          pushPlayerAboveTerrain(player, brushStrength, dt);
         }
       }
     }
 
     rebuildDirtyChunks(scene, isMining || isBuilding ? 8 : 2);
-    pushPlayerAboveTerrain(player, isBuilding ? brushStrength : 0);
+    pushPlayerAboveTerrain(player, isBuilding ? brushStrength : 0, dt);
 
     camera.position.copyFrom(player.position).addInPlace(new BABYLON.Vector3(0, PLAYER_EYE_HEIGHT, 0));
     updateStats(brushRadius, brushStrength);
