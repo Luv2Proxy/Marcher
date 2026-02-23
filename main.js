@@ -84,6 +84,24 @@ function sampleDensity(x, y, z) {
   return c0 * (1 - tz) + c1 * tz;
 }
 
+function resolvePlayerInsideTerrain() {
+  if (!capsuleCollides(camera.position)) return;
+
+  let push = 0;
+  const maxPush = 1.5; // max escape height
+  const step = 0.02;
+
+  while (capsuleCollides(camera.position) && push < maxPush) {
+    camera.position.y += step;
+    push += step;
+  }
+
+  if (push > 0) {
+    verticalVelocity = 0;
+    onGround = true;
+  }
+}
+
 function capsuleCollides(pos) {
   const steps = 6; // vertical samples
   const bottom = pos.y - playerHeight;
@@ -639,6 +657,7 @@ scene.onBeforeRenderObservable.add(() => {
         brushRadius,
         isMining ? -brushStrength : brushStrength
       );
+      resolvePlayerInsideTerrain();
     }
   }
   rebuildDirtyChunks(2);
