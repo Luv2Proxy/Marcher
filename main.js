@@ -155,18 +155,20 @@ function sampleDensity(x, y, z) {
 
 
 function getGroundInfo(pos) {
+
   const down = GROUND_SEARCH_DEPTH;
   const step = GROUND_SAMPLE_STEP;
 
   let previousDensity = sampleDensity(pos.x, pos.y, pos.z);
 
   for (let y = pos.y - step; y > pos.y - down; y -= step) {
+
     const d = sampleDensity(pos.x, y, pos.z);
 
-    // Detect crossing from air into solid
+    // Detect air → solid transition
     if (previousDensity < ISO_LEVEL && d >= ISO_LEVEL) {
 
-      // Refine intersection with binary search (prevents falling through)
+      // Binary refinement for stable contact
       let y0 = y;
       let y1 = y + step;
 
@@ -179,10 +181,20 @@ function getGroundInfo(pos) {
 
       const groundY = (y0 + y1) * 0.5;
 
+      // Compute normal from density gradient
       const eps = NORMAL_SAMPLE_EPS;
-      const nx = sampleDensity(pos.x + eps, groundY, pos.z) - sampleDensity(pos.x - eps, groundY, pos.z);
-      const ny = sampleDensity(pos.x, groundY + eps, pos.z) - sampleDensity(pos.x, groundY - eps, pos.z);
-      const nz = sampleDensity(pos.x, groundY, pos.z + eps) - sampleDensity(pos.x, groundY, pos.z - eps);
+
+      const nx =
+        sampleDensity(pos.x + eps, groundY, pos.z) -
+        sampleDensity(pos.x - eps, groundY, pos.z);
+
+      const ny =
+        sampleDensity(pos.x, groundY + eps, pos.z) -
+        sampleDensity(pos.x, groundY - eps, pos.z);
+
+      const nz =
+        sampleDensity(pos.x, groundY, pos.z + eps) -
+        sampleDensity(pos.x, groundY, pos.z - eps);
 
       const normal = new BABYLON.Vector3(nx, ny, nz).normalize();
 
@@ -709,59 +721,50 @@ async function createScene() {
       player.velocity.z *= scale;
     }
   
-    // --- GRAVITY ---
-    if (!player.grounded) {
-      player.velocity.y -= GRAVITY * dt;
-    }
-  
-    // --- JUMP ---
-    if (pressed.has(" ") && player.grounded) {
-      player.velocity.y = JUMP_FORCE;
-      player.grounded = false;
-    }
-  
-    // --- APPLY MOVEMENT ---
-    const nextPos = new BABYLON.Vector3(
-      player.position.x + player.velocity.x * dt,
-      player.position.y,
-      player.position.z + player.velocity.z * dt
-    );
-  
-    // --- STEP HEIGHT CHECK ---
-    const horizontalTest = new BABYLON.Vector3(nextPos.x, player.position.y, nextPos.z);
-  
-    if (collidesAt(horizontalTest)) {
-      const stepped = new BABYLON.Vector3(nextPos.x, player.position.y + STEP_HEIGHT, nextPos.z);
-      if (!collidesAt(stepped)) {
-        player.position.copyFrom(stepped);
-      }
-    } else {
-      player.position.x = nextPos.x;
-      player.position.z = nextPos.z;
-    }
-  
-    // --- GROUND SNAP ---
-    const ground = getGroundInfo(player.position);
-  
-    if (ground) {
-      const desiredY = ground.y + PLAYER_HALF_HEIGHT + PLAYER_CLEARANCE;
-  
-      const slopeDot = ground.normal.dot(BABYLON.Vector3.Up());
-  
-      if (slopeDot > MAX_SLOPE_DOT && player.velocity.y <= 0) {
+    // ------------------------
+    // VERTICAL + GROUND LOGIC
+    // ------------------------
+    
+    /* 1️⃣ Apply gravity */
+    player.velocity.y -= GRAVITY * dt;
+    player.velocity.y = Math.max(player.velocity.y, -30);
+    
+    /* 2️⃣ Integrate vertical */
+    player.position.y += player.velocity.y * dt;
+    
+    /* 3️⃣ Ground detection */
+    const groundInfo = getGroundInfo(player.position);
+    
+    if (groundInfo) {
+    
+      const desiredY =
+        groundInfo.y +
+        PLAYER_HALF_HEIGHT +
+        PLAYER_CLEARANCE;
+    
+      const slopeDot = groundInfo.normal.dot(BABYLON.Vector3.Up());
+    
+      if (
+        slopeDot > MAX_SLOPE_DOT &&
+        player.velocity.y <= 0 &&
+        player.position.y <= desiredY + 0.05
+      ) {
         player.position.y = desiredY;
-        player.velocity.y = -GROUND_STICK_FORCE;
+        player.velocity.y = 0;
         player.grounded = true;
-        player.groundNormal = ground.normal;
+        player.groundNormal = groundInfo.normal;
       } else {
         player.grounded = false;
       }
+    
     } else {
       player.grounded = false;
     }
-  
-    if (!player.grounded) {
-      player.position.y += player.velocity.y * dt;
+    
+    /* 4️⃣ Jump */
+    if (pressed.has(" ") && player.grounded) {
+      player.velocity.y = JUMP_FORCE;
+      player.grounded = false;
     }
   
     camera.position.copyFrom(player.position).addInPlace(new BABYLON.Vector3(0, PLAYER_EYE_HEIGHT, 0));
