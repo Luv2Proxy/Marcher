@@ -607,11 +607,10 @@ scene.onBeforeRenderObservable.add(() => {
   // MINING / BUILDING
   // -------------------------
   if (isMining || isBuilding) {
-    const pick = scene.pick(
-      scene.pointerX,
-      scene.pointerY,
-      (m) => m?.metadata?.terrainChunk === true
-    );
+    const rayLength = 6; // how far player can mine/build
+    const ray = camera.getForwardRay(rayLength);
+    
+    const pick = scene.pickWithRay(ray, (m) => m?.metadata?.terrainChunk === true);
 
     if (pick?.hit && pick.pickedPoint) {
       const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
