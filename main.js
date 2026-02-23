@@ -154,47 +154,49 @@ function sampleDensity(x, y, z) {
 }
 
 
-function getGroundInfo(pos) {
+function getGroundInfo(playerPos) {
 
   const down = GROUND_SEARCH_DEPTH;
   const step = GROUND_SAMPLE_STEP;
 
-  let previousDensity = sampleDensity(pos.x, pos.y, pos.z);
+  // Start from bottom of capsule
+  const footY = playerPos.y - PLAYER_HALF_HEIGHT + PLAYER_CLEARANCE;
 
-  for (let y = pos.y - step; y > pos.y - down; y -= step) {
+  let previousDensity = sampleDensity(playerPos.x, footY, playerPos.z);
 
-    const d = sampleDensity(pos.x, y, pos.z);
+  for (let y = footY - step; y > footY - down; y -= step) {
 
-    // Detect air → solid transition
+    const d = sampleDensity(playerPos.x, y, playerPos.z);
+
+    // Detect air -> solid transition
     if (previousDensity < ISO_LEVEL && d >= ISO_LEVEL) {
 
-      // Binary refinement for stable contact
+      // Binary refinement
       let y0 = y;
       let y1 = y + step;
 
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 5; i++) {
         const mid = (y0 + y1) * 0.5;
-        const dm = sampleDensity(pos.x, mid, pos.z);
+        const dm = sampleDensity(playerPos.x, mid, playerPos.z);
         if (dm >= ISO_LEVEL) y0 = mid;
         else y1 = mid;
       }
 
       const groundY = (y0 + y1) * 0.5;
 
-      // Compute normal from density gradient
       const eps = NORMAL_SAMPLE_EPS;
 
       const nx =
-        sampleDensity(pos.x + eps, groundY, pos.z) -
-        sampleDensity(pos.x - eps, groundY, pos.z);
+        sampleDensity(playerPos.x + eps, groundY, playerPos.z) -
+        sampleDensity(playerPos.x - eps, groundY, playerPos.z);
 
       const ny =
-        sampleDensity(pos.x, groundY + eps, pos.z) -
-        sampleDensity(pos.x, groundY - eps, pos.z);
+        sampleDensity(playerPos.x, groundY + eps, playerPos.z) -
+        sampleDensity(playerPos.x, groundY - eps, playerPos.z);
 
       const nz =
-        sampleDensity(pos.x, groundY, pos.z + eps) -
-        sampleDensity(pos.x, groundY, pos.z - eps);
+        sampleDensity(playerPos.x, groundY, playerPos.z + eps) -
+        sampleDensity(playerPos.x, groundY, playerPos.z - eps);
 
       const normal = new BABYLON.Vector3(nx, ny, nz).normalize();
 
