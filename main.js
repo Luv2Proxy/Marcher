@@ -606,25 +606,44 @@ scene.onBeforeRenderObservable.add(() => {
   // -------------------------
   // MINING / BUILDING
   // -------------------------
+  // -------------------------
+  // MINING / BUILDING (True Center Ray)
+  // -------------------------
   if (isMining || isBuilding) {
-    const rayLength = 6; // how far player can mine/build
-    const ray = camera.getForwardRay(rayLength);
-    
-    const pick = scene.pickWithRay(ray, (m) => m?.metadata?.terrainChunk === true);
-
+  
+    const rayLength = 6;
+  
+    // exact screen center
+    const ray = scene.createPickingRay(
+      engine.getRenderWidth() * 0.5,
+      engine.getRenderHeight() * 0.5,
+      BABYLON.Matrix.Identity(),
+      camera,
+      false
+    );
+  
+    ray.length = rayLength;
+  
+    const pick = scene.pickWithRay(
+      ray,
+      (m) => m?.metadata?.terrainChunk === true
+    );
+  
     if (pick?.hit && pick.pickedPoint) {
+  
       const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
-
+  
       const offsetPoint = isBuilding
-        ? pick.pickedPoint.add(normal.scale(0.8))
-        : pick.pickedPoint.subtract(normal.scale(0.45));
-
+        ? pick.pickedPoint.add(normal.scale(brushRadius * 0.5))
+        : pick.pickedPoint.subtract(normal.scale(brushRadius * 0.5));
+  
       modifyField(
         offsetPoint,
         brushRadius,
         isMining ? -brushStrength : brushStrength
       );
     }
+  }
   }
 
   rebuildDirtyChunks(2);
