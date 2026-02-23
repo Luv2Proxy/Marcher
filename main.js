@@ -49,6 +49,7 @@ const PLAYER_RADIUS = 0.34;          // Capsule radius
 const PLAYER_HEIGHT = 1.8;           // Total height
 const PLAYER_HALF_HEIGHT = PLAYER_HEIGHT * 0.5;
 const PLAYER_CLEARANCE = 0.11;       // Offset above terrain to prevent jitter
+const COLLISION_SHELL = 0.05;
 const PLAYER_EYE_HEIGHT = 0.72;      // Camera height offset
 
 
@@ -617,8 +618,6 @@ async function createScene() {
   let isMining = false;
   let isBuilding = false;
   let sprinting = false;
-  let buildPushFramesRemaining = 0;
-  let lastBuildAwayDirection = null;
 
   regenerateField();
   createChunks(scene, terrainMaterial);
@@ -648,10 +647,6 @@ async function createScene() {
       regenerateField();
       markAllChunksDirty();
       rebuildDirtyChunks(scene, Infinity);
-    }
-    if (key === " " && player.grounded) {
-      player.verticalVelocity = JUMP_SPEED;
-      player.grounded = false;
     }
     updateStats(brushRadius, brushStrength);
   });
