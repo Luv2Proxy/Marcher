@@ -506,38 +506,38 @@ window.addEventListener("keyup", (event) => {
 scene.onBeforeRenderObservable.add(() => {
   const dt = engine.getDeltaTime() * 0.001;
 
-  const baseSpeed = scene.getEngine().isPointerLock ? 6.5 : 4.5;
-  const moveSpeed = sprinting ? baseSpeed * 1.8 : baseSpeed;
-
   const prev = camera.position.clone();
 
   // -------------------------
-  // Gravity
+  // GRAVITY
   // -------------------------
   verticalVelocity -= gravity * dt;
   camera.position.y += verticalVelocity * dt;
 
   // -------------------------
-  // Vertical Collision
+  // VERTICAL COLLISION
   // -------------------------
   if (capsuleCollides(camera.position)) {
     if (verticalVelocity <= 0) {
+      // Falling onto ground
       onGround = true;
       verticalVelocity = 0;
 
-      // Snap upward gently (no teleporting)
-      let correction = 0;
-      while (capsuleCollides(camera.position) && correction < 0.6) {
-        camera.position.y += 0.04;
-        correction += 0.04;
+      // Precise upward correction (no climbing)
+      let push = 0;
+      const maxPush = 0.25; // small only
+      while (capsuleCollides(camera.position) && push < maxPush) {
+        camera.position.y += 0.01;
+        push += 0.01;
       }
 
-      // Hard clamp to prevent launch-to-surface bug
-      if (camera.position.y > prev.y + 0.6) {
+      // If still colliding, revert fully
+      if (capsuleCollides(camera.position)) {
         camera.position.y = prev.y;
       }
+
     } else {
-      // Head hit ceiling
+      // Hit ceiling
       verticalVelocity = 0;
       camera.position.y = prev.y;
     }
@@ -546,65 +546,65 @@ scene.onBeforeRenderObservable.add(() => {
   }
 
   // -------------------------
-  // Horizontal Desired Position
+  // HORIZONTAL MOVEMENT
   // -------------------------
   const desired = camera.position.clone();
-
   const stepHeight = 0.4;
 
-  // -------------------------
-  // X Axis Resolve
-  // -------------------------
+  // ---- X Axis ----
   camera.position.x = desired.x;
   camera.position.z = prev.z;
 
   if (capsuleCollides(camera.position)) {
-    const attempt = camera.position.clone();
+    const original = camera.position.clone();
 
-    // Try stepping up
+    // Attempt step
     camera.position.y += stepHeight;
 
-    if (!capsuleCollides(camera.position)) {
-      // Ensure no ceiling conflict
-      const headTest = camera.position.clone();
-      headTest.y += 0.05;
-
-      if (capsuleCollides(headTest)) {
-        camera.position.copyFrom(attempt);
-        camera.position.x = prev.x;
-      }
+    if (
+      !capsuleCollides(camera.position) &&
+      !capsuleCollides(
+        new BABYLON.Vector3(
+          camera.position.x,
+          camera.position.y + 0.05,
+          camera.position.z
+        )
+      )
+    ) {
+      // successful step
     } else {
-      camera.position.copyFrom(attempt);
+      camera.position.copyFrom(original);
       camera.position.x = prev.x;
     }
   }
 
-  // -------------------------
-  // Z Axis Resolve
-  // -------------------------
+  // ---- Z Axis ----
   camera.position.z = desired.z;
 
   if (capsuleCollides(camera.position)) {
-    const attempt = camera.position.clone();
+    const original = camera.position.clone();
 
     camera.position.y += stepHeight;
 
-    if (!capsuleCollides(camera.position)) {
-      const headTest = camera.position.clone();
-      headTest.y += 0.05;
-
-      if (capsuleCollides(headTest)) {
-        camera.position.copyFrom(attempt);
-        camera.position.z = prev.z;
-      }
+    if (
+      !capsuleCollides(camera.position) &&
+      !capsuleCollides(
+        new BABYLON.Vector3(
+          camera.position.x,
+          camera.position.y + 0.05,
+          camera.position.z
+        )
+      )
+    ) {
+      // successful step
     } else {
-      camera.position.copyFrom(attempt);
+      camera.position.copyFrom(original);
       camera.position.z = prev.z;
     }
   }
 
   // -------------------------
-  // Mining / Building
+  // MINING / BUILDING
   // -------------------------
   if (isMining || isBuilding) {
     const pick = scene.pick(
