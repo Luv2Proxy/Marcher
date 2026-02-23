@@ -49,6 +49,8 @@ const PLAYER_CLEARANCE = 0.11;
 const COLLISION_SHELL = 0.12;
 const SOFT_CLIP_DENSITY = 0.16;
 const HARD_CLIP_DENSITY = 0.46;
+const BUILD_PUSH_GRACE_FRAMES = 4;
+const DIRECTIONAL_PUSH_STRENGTH = 0.065;
 const GRAVITY = 29;
 const JUMP_SPEED = 9.5;
 
@@ -168,9 +170,13 @@ function samplePlayerPenetration(playerPos) {
   };
 }
 
-function pushPlayerAboveTerrain(playerState, boost = 0, dt = 1 / 60) {
+function pushPlayerAboveTerrain(playerState, boost = 0, dt = 1 / 60, isPushActive = false, awayDirection = null) {
   const penetration = samplePlayerPenetration(playerState.position);
   const isHardClip = penetration.depth > HARD_CLIP_DENSITY || penetration.coverage > 0.55;
+
+  if (!isPushActive) {
+    return;
+  }
 
   if (!isHardClip && penetration.depth < SOFT_CLIP_DENSITY && penetration.coverage < 0.16) {
     return;
@@ -184,6 +190,16 @@ function pushPlayerAboveTerrain(playerState, boost = 0, dt = 1 / 60) {
   }
 
   playerState.position.y += pushUp;
+
+  if (awayDirection && awayDirection.lengthSquared() > 1e-6) {
+    const lateral = awayDirection.clone();
+    lateral.y = 0;
+    if (lateral.lengthSquared() > 1e-6) {
+      lateral.normalize();
+      const lateralPush = DIRECTIONAL_PUSH_STRENGTH * Math.max(0.75, dt * 60) * (0.7 + boost * 0.35);
+      playerState.position.addInPlace(lateral.scale(lateralPush));
+    }
+  }
 
   if (isHardClip) {
     for (let i = 0; i < 8; i++) {
@@ -547,6 +563,8 @@ async function createScene() {
   let isMining = false;
   let isBuilding = false;
   let sprinting = false;
+  let buildPushFramesRemaining = 0;
+  let lastBuildAwayDirection = null;
 
   regenerateField();
   createChunks(scene, terrainMaterial);
@@ -645,23 +663,39 @@ async function createScene() {
         modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
 
         if (isBuilding) {
+          const awayFromBuild = player.position.subtract(offsetPoint);
+          if (awayFromBuild.lengthSquared() > 1e-6) {
+            awayFromBuild.normalize();
+            lastBuildAwayDirection = awayFromBuild;
+          }
+
+          buildPushFramesRemaining = BUILD_PUSH_GRACE_FRAMES;
+
           const dx = offsetPoint.x - player.position.x;
           const dz = offsetPoint.z - player.position.z;
           const nearFeet = dx * dx + dz * dz < Math.pow(PLAYER_RADIUS + brushRadius * 0.7, 2)
             && offsetPoint.y <= player.position.y + PLAYER_HALF_HEIGHT;
           if (nearFeet) {
             player.verticalVelocity = Math.max(player.verticalVelocity, 1.8 + brushStrength * 0.55);
+            player.position.addInPlace((lastBuildAwayDirection ?? new BABYLON.Vector3(0, 0, 0)).scale(0.02));
             player.position.y += 0.02 + brushStrength * 0.008;
           }
 
           rebuildDirtyChunks(scene, Infinity);
-          pushPlayerAboveTerrain(player, brushStrength, dt);
+          pushPlayerAboveTerrain(player, brushStrength, dt, true, lastBuildAwayDirection);
         }
       }
     }
 
     rebuildDirtyChunks(scene, isMining || isBuilding ? 8 : 2);
-    pushPlayerAboveTerrain(player, isBuilding ? brushStrength : 0, dt);
+
+    const pushActive = isBuilding || buildPushFramesRemaining > 0;
+    if (pushActive) {
+      pushPlayerAboveTerrain(player, isBuilding ? brushStrength : brushStrength * 0.7, dt, true, lastBuildAwayDirection);
+    }
+
+    if (buildPushFramesRemaining > 0 && !isBuilding) buildPushFramesRemaining -= 1;
+    if (buildPushFramesRemaining === 0 && !isBuilding) lastBuildAwayDirection = null;
 
     camera.position.copyFrom(player.position).addInPlace(new BABYLON.Vector3(0, PLAYER_EYE_HEIGHT, 0));
     updateStats(brushRadius, brushStrength);
