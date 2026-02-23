@@ -641,7 +641,6 @@ scene.onBeforeRenderObservable.add(() => {
       );
     }
   }
-
   rebuildDirtyChunks(2);
   updateStats();
 });
