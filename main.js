@@ -155,29 +155,41 @@ function sampleDensity(x, y, z) {
 
 
 function getGroundInfo(pos) {
-  const down = 2;
-  const step = 0.1;
+  const down = GROUND_SEARCH_DEPTH;
+  const step = GROUND_SAMPLE_STEP;
 
-  let lastDensity = sampleDensity(pos.x, pos.y + 0.2, pos.z);
+  let previousDensity = sampleDensity(pos.x, pos.y, pos.z);
 
-  for (let y = pos.y; y > pos.y - down; y -= step) {
+  for (let y = pos.y - step; y > pos.y - down; y -= step) {
     const d = sampleDensity(pos.x, y, pos.z);
 
-    if (lastDensity < ISO_LEVEL && d >= ISO_LEVEL) {
-      const groundY = y;
-      
-      // Approximate surface normal via gradient
-      const eps = 0.05;
-      const nx = sampleDensity(pos.x + eps, y, pos.z) - sampleDensity(pos.x - eps, y, pos.z);
-      const ny = sampleDensity(pos.x, y + eps, pos.z) - sampleDensity(pos.x, y - eps, pos.z);
-      const nz = sampleDensity(pos.x, y, pos.z + eps) - sampleDensity(pos.x, y, pos.z - eps);
+    // Detect crossing from air into solid
+    if (previousDensity < ISO_LEVEL && d >= ISO_LEVEL) {
+
+      // Refine intersection with binary search (prevents falling through)
+      let y0 = y;
+      let y1 = y + step;
+
+      for (let i = 0; i < 4; i++) {
+        const mid = (y0 + y1) * 0.5;
+        const dm = sampleDensity(pos.x, mid, pos.z);
+        if (dm >= ISO_LEVEL) y0 = mid;
+        else y1 = mid;
+      }
+
+      const groundY = (y0 + y1) * 0.5;
+
+      const eps = NORMAL_SAMPLE_EPS;
+      const nx = sampleDensity(pos.x + eps, groundY, pos.z) - sampleDensity(pos.x - eps, groundY, pos.z);
+      const ny = sampleDensity(pos.x, groundY + eps, pos.z) - sampleDensity(pos.x, groundY - eps, pos.z);
+      const nz = sampleDensity(pos.x, groundY, pos.z + eps) - sampleDensity(pos.x, groundY, pos.z - eps);
 
       const normal = new BABYLON.Vector3(nx, ny, nz).normalize();
 
       return { y: groundY, normal };
     }
 
-    lastDensity = d;
+    previousDensity = d;
   }
 
   return null;
