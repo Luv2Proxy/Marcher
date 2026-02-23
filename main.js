@@ -44,6 +44,10 @@ const chunkKey = (x, y, z) => `${x},${y},${z}`;
 const PLAYER_RADIUS = 0.34;
 const PLAYER_HEIGHT = 1.8;
 const PLAYER_HALF_HEIGHT = PLAYER_HEIGHT * 0.5;
+const PLAYER_EYE_HEIGHT = 0.72;
+const PLAYER_CLEARANCE = 0.08;
+const GRAVITY = 29;
+const JUMP_SPEED = 9.5;
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -82,6 +86,50 @@ function sampleDensity(x, y, z) {
   return c0 * (1 - tz) + c1 * tz;
 }
 
+
+function findGroundYAt(x, startY, z) {
+  const maxY = Math.min(FIELD_SIZE.y - 1.001, startY);
+  const minY = 0.001;
+  let prevDensity = sampleDensity(x, maxY, z);
+
+  for (let y = maxY - 0.2; y >= minY; y -= 0.2) {
+    const d = sampleDensity(x, y, z);
+    if (prevDensity < ISO_LEVEL && d >= ISO_LEVEL) {
+      const t = (ISO_LEVEL - prevDensity) / (d - prevDensity + 1e-6);
+      return y + 0.2 * (1 - t);
+    }
+    prevDensity = d;
+  }
+
+  return null;
+}
+
+function collidesAt(position) {
+  const bottom = position.y - PLAYER_HALF_HEIGHT + 0.06;
+  const top = position.y + PLAYER_HALF_HEIGHT - 0.05;
+  const rings = [bottom, bottom + (top - bottom) * 0.35, bottom + (top - bottom) * 0.7, top];
+  const radial = PLAYER_RADIUS;
+  const offsets = [
+    [0, 0],
+    [radial, 0],
+    [-radial, 0],
+    [0, radial],
+    [0, -radial],
+    [radial * 0.72, radial * 0.72],
+    [-radial * 0.72, radial * 0.72],
+    [radial * 0.72, -radial * 0.72],
+    [-radial * 0.72, -radial * 0.72],
+  ];
+
+  for (const y of rings) {
+    for (const [ox, oz] of offsets) {
+      if (sampleDensity(position.x + ox, y, position.z + oz) >= ISO_LEVEL) return true;
+    }
+  }
+
+  return false;
+}
+
 function playerEmbeddedInTerrain(playerPos) {
   const sampleYs = [
     playerPos.y - PLAYER_HALF_HEIGHT + 0.08,
@@ -105,15 +153,28 @@ function playerEmbeddedInTerrain(playerPos) {
   return false;
 }
 
-function pushPlayerAboveTerrain(player, playerBody) {
-  if (!playerEmbeddedInTerrain(player.position)) return;
+function pushPlayerAboveTerrain(playerState, boost = 0) {
+  const maxStep = Math.max(0.16, boost * 0.028);
+  const pushStep = Math.min(0.55, maxStep);
+  let lifted = false;
 
-  for (let i = 0; i < 40; i++) {
-    player.position.y += 0.12;
-    if (!playerEmbeddedInTerrain(player.position)) {
-      playerBody.body.setLinearVelocity(new BABYLON.Vector3(0, Math.max(1.5, playerBody.body.getLinearVelocity().y), 0));
-      return;
+  for (let i = 0; i < 60 && playerEmbeddedInTerrain(playerState.position); i++) {
+    playerState.position.y += pushStep;
+    lifted = true;
+  }
+
+  const floorY = findGroundYAt(playerState.position.x, playerState.position.y + PLAYER_HALF_HEIGHT + 4, playerState.position.z);
+  if (floorY !== null) {
+    const minCenterY = floorY + PLAYER_HALF_HEIGHT + PLAYER_CLEARANCE;
+    if (playerState.position.y < minCenterY) {
+      playerState.position.y = minCenterY;
+      lifted = true;
     }
+  }
+
+  if (lifted) {
+    playerState.verticalVelocity = Math.max(playerState.verticalVelocity, 1.35 + boost * 0.022);
+    playerState.grounded = false;
   }
 }
 
@@ -246,10 +307,6 @@ function buildChunkMesh(chunk, scene) {
   if (indices.length === 0) {
     chunk.mesh.setEnabled(false);
     chunk.triangleCount = 0;
-    if (chunk.physicsBody) {
-      chunk.physicsBody.dispose();
-      chunk.physicsBody = null;
-    }
     return;
   }
 
@@ -283,18 +340,6 @@ function buildChunkMesh(chunk, scene) {
   chunk.mesh.receiveShadows = false;
   chunk.triangleCount = indices.length / 3;
 
-  if (chunk.physicsBody) {
-    chunk.physicsBody.dispose();
-    chunk.physicsBody = null;
-  }
-  if (indices.length > 0) {
-    chunk.physicsBody = new BABYLON.PhysicsAggregate(
-      chunk.mesh,
-      BABYLON.PhysicsShapeType.MESH,
-      { mass: 0, friction: 1, restitution: 0 },
-      scene,
-    );
-  }
 }
 
 function rebuildDirtyChunks(scene, maxPerFrame = Infinity) {
@@ -399,7 +444,6 @@ function createChunks(scene, material) {
           minCell,
           maxCell,
           mesh,
-          physicsBody: null,
           triangleCount: 0,
         });
       }
@@ -423,10 +467,6 @@ async function createScene() {
   scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
   scene.fogDensity = 0.008;
   scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
-
-  const havokInstance = await HavokPhysics();
-  const havokPlugin = new BABYLON.HavokPlugin(true, havokInstance);
-  scene.enablePhysics(new BABYLON.Vector3(0, -24, 0), havokPlugin);
 
   const camera = new BABYLON.UniversalCamera(
     "cam",
@@ -468,15 +508,11 @@ async function createScene() {
     return scene.pick(x, y, predicate, false, camera);
   };
 
-  const player = BABYLON.MeshBuilder.CreateCapsule("playerBody", { height: PLAYER_HEIGHT, radius: PLAYER_RADIUS }, scene);
-  player.isVisible = false;
-  player.position = new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5);
-  const playerBody = new BABYLON.PhysicsAggregate(
-    player,
-    BABYLON.PhysicsShapeType.CAPSULE,
-    { mass: 70, restitution: 0, friction: 0.2 },
-    scene,
-  );
+  const player = {
+    position: new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5),
+    verticalVelocity: 0,
+    grounded: false,
+  };
 
   let brushRadius = 2.7;
   let brushStrength = 1.05;
@@ -513,10 +549,9 @@ async function createScene() {
       markAllChunksDirty();
       rebuildDirtyChunks(scene, Infinity);
     }
-    if (key === " ") {
-      const ray = new BABYLON.Ray(player.position.clone(), BABYLON.Vector3.Down(), 1.05);
-      const hit = scene.pickWithRay(ray, (mesh) => mesh?.metadata?.terrainChunk === true);
-      if (hit?.hit) playerBody.body.applyImpulse(new BABYLON.Vector3(0, 260, 0), player.position);
+    if (key === " " && player.grounded) {
+      player.verticalVelocity = JUMP_SPEED;
+      player.grounded = false;
     }
     updateStats(brushRadius, brushStrength);
   });
@@ -528,6 +563,7 @@ async function createScene() {
   });
 
   scene.onBeforeRenderObservable.add(() => {
+    const dt = Math.min(0.033, engine.getDeltaTime() / 1000);
     const baseSpeed = sprinting ? 12 : 6.2;
     const forward = camera.getDirection(BABYLON.Axis.Z).normalize();
     const right = camera.getDirection(BABYLON.Axis.X).normalize();
@@ -541,13 +577,34 @@ async function createScene() {
     if (pressed.has("s")) move.subtractInPlace(forward);
     if (pressed.has("a")) move.subtractInPlace(right);
     if (pressed.has("d")) move.addInPlace(right);
-    if (move.lengthSquared() > 0.0001) move.normalize().scaleInPlace(baseSpeed);
+    if (move.lengthSquared() > 0.0001) move.normalize().scaleInPlace(baseSpeed * dt);
 
-    const currentVel = playerBody.body.getLinearVelocity();
-    playerBody.body.setAngularVelocity(BABYLON.Vector3.Zero());
-    playerBody.body.setLinearVelocity(new BABYLON.Vector3(move.x, currentVel.y, move.z));
+    const testX = player.position.add(new BABYLON.Vector3(move.x, 0, 0));
+    if (!collidesAt(testX)) player.position.x = testX.x;
+    const testZ = player.position.add(new BABYLON.Vector3(0, 0, move.z));
+    if (!collidesAt(testZ)) player.position.z = testZ.z;
 
-    camera.position.copyFrom(player.position).addInPlace(new BABYLON.Vector3(0, 0.62, 0));
+    player.verticalVelocity -= GRAVITY * dt;
+    let nextY = player.position.y + player.verticalVelocity * dt;
+    const verticalTest = new BABYLON.Vector3(player.position.x, nextY, player.position.z);
+
+    if (player.verticalVelocity <= 0) {
+      const groundY = findGroundYAt(player.position.x, player.position.y + PLAYER_HALF_HEIGHT + 0.5, player.position.z);
+      const desiredY = groundY === null ? -Infinity : groundY + PLAYER_HALF_HEIGHT + PLAYER_CLEARANCE;
+      if (nextY <= desiredY) {
+        nextY = desiredY;
+        player.verticalVelocity = 0;
+        player.grounded = true;
+      } else {
+        player.grounded = false;
+      }
+    } else if (collidesAt(verticalTest)) {
+      player.verticalVelocity = 0;
+    } else {
+      player.grounded = false;
+    }
+
+    player.position.y = nextY;
 
     if (isMining || isBuilding) {
       const pick = pickFromCrosshair((mesh) => mesh?.metadata?.terrainChunk === true);
@@ -559,16 +616,17 @@ async function createScene() {
 
         modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
 
-        const nearPlayer = BABYLON.Vector3.Distance(offsetPoint, player.position) < 3.2;
-        if (isBuilding && nearPlayer) {
+        if (isBuilding) {
           rebuildDirtyChunks(scene, Infinity);
-          pushPlayerAboveTerrain(player, playerBody);
+          pushPlayerAboveTerrain(player, brushStrength);
         }
       }
     }
 
     rebuildDirtyChunks(scene, isMining || isBuilding ? 8 : 2);
-    pushPlayerAboveTerrain(player, playerBody);
+    pushPlayerAboveTerrain(player, isBuilding ? brushStrength : 0);
+
+    camera.position.copyFrom(player.position).addInPlace(new BABYLON.Vector3(0, PLAYER_EYE_HEIGHT, 0));
     updateStats(brushRadius, brushStrength);
   });
 
