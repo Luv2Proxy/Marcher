@@ -222,6 +222,38 @@ function pushPlayerAboveTerrain(playerState, boost = 0, dt = 1 / 60, isPushActiv
   playerState.grounded = false;
 }
 
+function tryResolveLateralClip(playerState, preferredDir, step = 0.06) {
+  const basis = (preferredDir && preferredDir.lengthSquared() > 1e-6)
+    ? preferredDir.clone().normalize()
+    : new BABYLON.Vector3(1, 0, 0);
+  basis.y = 0;
+  if (basis.lengthSquared() < 1e-6) basis.x = 1;
+  basis.normalize();
+
+  const perp = new BABYLON.Vector3(-basis.z, 0, basis.x);
+  const candidates = [
+    basis,
+    perp,
+    perp.scale(-1),
+    basis.scale(-1),
+    new BABYLON.Vector3(1, 0, 0),
+    new BABYLON.Vector3(-1, 0, 0),
+    new BABYLON.Vector3(0, 0, 1),
+    new BABYLON.Vector3(0, 0, -1),
+  ];
+
+  for (const dir of candidates) {
+    const delta = dir.normalize().scale(step);
+    const testPos = playerState.position.add(delta);
+    if (!collidesAt(testPos)) {
+      playerState.position.copyFrom(testPos);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 const pseudoNoise = (x, y, z) => {
   const a = Math.sin(x * 0.13 + z * 0.07) * 0.6;
   const b = Math.cos(z * 0.11 - x * 0.09) * 0.45;
@@ -623,12 +655,20 @@ async function createScene() {
     if (pressed.has("s")) move.subtractInPlace(forward);
     if (pressed.has("a")) move.subtractInPlace(right);
     if (pressed.has("d")) move.addInPlace(right);
-    if (move.lengthSquared() > 0.0001) move.normalize().scaleInPlace(baseSpeed * dt);
+
+    const moveDir = move.lengthSquared() > 0.0001 ? move.normalizeToNew() : null;
+    if (moveDir) move.scaleInPlace(baseSpeed * dt);
 
     const testX = player.position.add(new BABYLON.Vector3(move.x, 0, 0));
-    if (!collidesAt(testX)) player.position.x = testX.x;
+    const movedX = !collidesAt(testX);
+    if (movedX) player.position.x = testX.x;
     const testZ = player.position.add(new BABYLON.Vector3(0, 0, move.z));
-    if (!collidesAt(testZ)) player.position.z = testZ.z;
+    const movedZ = !collidesAt(testZ);
+    if (movedZ) player.position.z = testZ.z;
+
+    if (moveDir && !movedX && !movedZ) {
+      tryResolveLateralClip(player, moveDir, 0.05 + baseSpeed * dt * 0.45);
+    }
 
     player.verticalVelocity -= GRAVITY * dt;
     let nextY = player.position.y + player.verticalVelocity * dt;
@@ -646,6 +686,8 @@ async function createScene() {
       }
     } else if (collidesAt(verticalTest)) {
       player.verticalVelocity = 0;
+      const preferredEscape = moveDir ?? lastBuildAwayDirection ?? forward.scale(-1);
+      tryResolveLateralClip(player, preferredEscape, 0.08);
     } else {
       player.grounded = false;
     }
@@ -692,6 +734,14 @@ async function createScene() {
     const pushActive = isBuilding || buildPushFramesRemaining > 0;
     if (pushActive) {
       pushPlayerAboveTerrain(player, isBuilding ? brushStrength : brushStrength * 0.7, dt, true, lastBuildAwayDirection);
+    }
+
+    const penetration = samplePlayerPenetration(player.position);
+    if (penetration.coverage > 0.34) {
+      const preferredEscape = moveDir ?? lastBuildAwayDirection ?? forward.scale(-1);
+      if (tryResolveLateralClip(player, preferredEscape, 0.075)) {
+        player.position.y += 0.015;
+      }
     }
 
     if (buildPushFramesRemaining > 0 && !isBuilding) buildPushFramesRemaining -= 1;
