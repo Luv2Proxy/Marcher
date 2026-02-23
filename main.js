@@ -41,18 +41,79 @@ const statsEl = document.getElementById("stats");
 const getIndex = (x, y, z) => x + FIELD_SIZE.x * (y + FIELD_SIZE.y * z);
 const chunkKey = (x, y, z) => `${x},${y},${z}`;
 
-const PLAYER_RADIUS = 0.34;
-const PLAYER_HEIGHT = 1.8;
+/* ================================
+   PLAYER GEOMETRY CONSTRAINTS
+================================ */
+
+const PLAYER_RADIUS = 0.34;          // Capsule radius
+const PLAYER_HEIGHT = 1.8;           // Total height
 const PLAYER_HALF_HEIGHT = PLAYER_HEIGHT * 0.5;
-const PLAYER_EYE_HEIGHT = 0.72;
-const PLAYER_CLEARANCE = 0.11;
-const COLLISION_SHELL = 0.12;
-const SOFT_CLIP_DENSITY = 0.16;
-const HARD_CLIP_DENSITY = 0.46;
-const BUILD_PUSH_GRACE_FRAMES = 4;
-const DIRECTIONAL_PUSH_STRENGTH = 0.065;
-const GRAVITY = 29;
-const JUMP_SPEED = 9.5;
+const PLAYER_CLEARANCE = 0.11;       // Offset above terrain to prevent jitter
+const PLAYER_EYE_HEIGHT = 0.72;      // Camera height offset
+
+
+/* ================================
+   MOVEMENT CONSTRAINTS
+================================ */
+
+const MOVE_ACCEL = 38;               // Ground acceleration
+const MOVE_FRICTION = 16;            // Ground friction (velocity decay)
+const AIR_CONTROL = 0.35;            // % of accel allowed in air
+
+const MAX_SPEED = 8;                 // Base horizontal speed
+const SPRINT_MULT = 1.65;            // Sprint multiplier
+
+
+/* ================================
+   STEP + SLOPE CONSTRAINTS
+================================ */
+
+const STEP_HEIGHT = 0.45;            // Max climbable ledge height
+
+// Slope constraint (~56° max walkable angle)
+const MAX_SLOPE_DOT = 0.55;          
+// Equivalent to: groundNormal.dot(Up) > 0.55
+
+const GROUND_STICK_FORCE = 4;        // Keeps player glued to slopes
+
+
+/* ================================
+   GRAVITY + JUMP CONSTRAINTS
+================================ */
+
+const GRAVITY = 24;                  // Downward acceleration
+const JUMP_FORCE = 8.5;              // Jump impulse
+
+
+/* ================================
+   GROUND DETECTION CONSTRAINTS
+================================ */
+
+const GROUND_SEARCH_DEPTH = 2;       // How far down to scan for ground
+const GROUND_SAMPLE_STEP = 0.1;      // Vertical scan resolution
+const NORMAL_SAMPLE_EPS = 0.05;      // Density gradient sampling offset
+
+
+/* ================================
+   STATE CONSTRAINTS
+================================ */
+
+// Grounded only if:
+// 1. Ground detected within search depth
+// 2. Slope is walkable (normal · up > MAX_SLOPE_DOT)
+// 3. Vertical velocity <= 0
+
+// Horizontal speed always clamped to:
+// MAX_SPEED * (sprinting ? SPRINT_MULT : 1)
+
+// Jump only allowed if grounded == true
+
+// Position integration always follows:
+// position += velocity * dt
+
+// No artificial vertical pushes
+// No post-penetration boost corrections
+// No terrain-induced velocity stacking
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -92,18 +153,30 @@ function sampleDensity(x, y, z) {
 }
 
 
-function findGroundYAt(x, startY, z) {
-  const maxY = Math.min(FIELD_SIZE.y - 1.001, startY);
-  const minY = 0.001;
-  let prevDensity = sampleDensity(x, maxY, z);
+function getGroundInfo(pos) {
+  const down = 2;
+  const step = 0.1;
 
-  for (let y = maxY - 0.2; y >= minY; y -= 0.2) {
-    const d = sampleDensity(x, y, z);
-    if (prevDensity < ISO_LEVEL && d >= ISO_LEVEL) {
-      const t = (ISO_LEVEL - prevDensity) / (d - prevDensity + 1e-6);
-      return y + 0.2 * (1 - t);
+  let lastDensity = sampleDensity(pos.x, pos.y + 0.2, pos.z);
+
+  for (let y = pos.y; y > pos.y - down; y -= step) {
+    const d = sampleDensity(pos.x, y, pos.z);
+
+    if (lastDensity < ISO_LEVEL && d >= ISO_LEVEL) {
+      const groundY = y;
+      
+      // Approximate surface normal via gradient
+      const eps = 0.05;
+      const nx = sampleDensity(pos.x + eps, y, pos.z) - sampleDensity(pos.x - eps, y, pos.z);
+      const ny = sampleDensity(pos.x, y + eps, pos.z) - sampleDensity(pos.x, y - eps, pos.z);
+      const nz = sampleDensity(pos.x, y, pos.z + eps) - sampleDensity(pos.x, y, pos.z - eps);
+
+      const normal = new BABYLON.Vector3(nx, ny, nz).normalize();
+
+      return { y: groundY, normal };
     }
-    prevDensity = d;
+
+    lastDensity = d;
   }
 
   return null;
@@ -168,58 +241,6 @@ function samplePlayerPenetration(playerPos) {
     depth: Math.max(0, maxDensity - ISO_LEVEL),
     coverage: insideCount / samples,
   };
-}
-
-function pushPlayerAboveTerrain(playerState, boost = 0, dt = 1 / 60, isPushActive = false, awayDirection = null) {
-  const penetration = samplePlayerPenetration(playerState.position);
-  const isHardClip = penetration.depth > HARD_CLIP_DENSITY || penetration.coverage > 0.55;
-
-  if (!isPushActive) {
-    return;
-  }
-
-  if (!isHardClip && penetration.depth < SOFT_CLIP_DENSITY && penetration.coverage < 0.16) {
-    return;
-  }
-
-  let pushUp = penetration.depth * 0.085 + penetration.coverage * 0.075 + boost * 0.005;
-  if (!isHardClip) {
-    pushUp = Math.min(pushUp, 0.09);
-  } else {
-    pushUp = Math.min(pushUp + 0.1, 0.28);
-  }
-
-  playerState.position.y += pushUp;
-
-  if (awayDirection && awayDirection.lengthSquared() > 1e-6) {
-    const lateral = awayDirection.clone();
-    lateral.y = 0;
-    if (lateral.lengthSquared() > 1e-6) {
-      lateral.normalize();
-      const lateralPush = DIRECTIONAL_PUSH_STRENGTH * Math.max(0.75, dt * 60) * (0.7 + boost * 0.35);
-      playerState.position.addInPlace(lateral.scale(lateralPush));
-    }
-  }
-
-  if (isHardClip) {
-    for (let i = 0; i < 8; i++) {
-      const next = samplePlayerPenetration(playerState.position);
-      if (next.depth < SOFT_CLIP_DENSITY && next.coverage < 0.18) break;
-      playerState.position.y += 0.04;
-    }
-  }
-
-  const floorY = findGroundYAt(playerState.position.x, playerState.position.y + PLAYER_HALF_HEIGHT + 4, playerState.position.z);
-  if (floorY !== null) {
-    const minCenterY = floorY + PLAYER_HALF_HEIGHT + PLAYER_CLEARANCE;
-    if (playerState.position.y < minCenterY) {
-      playerState.position.y = minCenterY;
-    }
-  }
-
-  const pushVel = 1.1 + boost * 0.3;
-  playerState.verticalVelocity = Math.max(playerState.verticalVelocity, pushVel * Math.max(0.6, dt * 60));
-  playerState.grounded = false;
 }
 
 function tryResolveLateralClip(playerState, preferredDir, step = 0.06) {
@@ -585,10 +606,11 @@ async function createScene() {
   };
 
   const player = {
-    position: new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5),
-    verticalVelocity: 0,
-    grounded: false,
-  };
+  position: new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5),
+  velocity: new BABYLON.Vector3(0, 0, 0),
+  grounded: false,
+  groundNormal: BABYLON.Vector3.Up()
+};
 
   let brushRadius = 2.7;
   let brushStrength = 1.05;
@@ -642,113 +664,96 @@ async function createScene() {
 
   scene.onBeforeRenderObservable.add(() => {
     const dt = Math.min(0.033, engine.getDeltaTime() / 1000);
-    const baseSpeed = sprinting ? 12 : 6.2;
+  
     const forward = camera.getDirection(BABYLON.Axis.Z).normalize();
     const right = camera.getDirection(BABYLON.Axis.X).normalize();
     forward.y = 0;
     right.y = 0;
     forward.normalize();
     right.normalize();
-
-    const move = new BABYLON.Vector3(0, 0, 0);
-    if (pressed.has("w")) move.addInPlace(forward);
-    if (pressed.has("s")) move.subtractInPlace(forward);
-    if (pressed.has("a")) move.subtractInPlace(right);
-    if (pressed.has("d")) move.addInPlace(right);
-
-    const moveDir = move.lengthSquared() > 0.0001 ? move.normalizeToNew() : null;
-    if (moveDir) move.scaleInPlace(baseSpeed * dt);
-
-    const testX = player.position.add(new BABYLON.Vector3(move.x, 0, 0));
-    const movedX = !collidesAt(testX);
-    if (movedX) player.position.x = testX.x;
-    const testZ = player.position.add(new BABYLON.Vector3(0, 0, move.z));
-    const movedZ = !collidesAt(testZ);
-    if (movedZ) player.position.z = testZ.z;
-
-    if (moveDir && !movedX && !movedZ) {
-      tryResolveLateralClip(player, moveDir, 0.05 + baseSpeed * dt * 0.45);
+  
+    let input = new BABYLON.Vector3(0, 0, 0);
+    if (pressed.has("w")) input.addInPlace(forward);
+    if (pressed.has("s")) input.subtractInPlace(forward);
+    if (pressed.has("a")) input.subtractInPlace(right);
+    if (pressed.has("d")) input.addInPlace(right);
+  
+    const isMoving = input.lengthSquared() > 0.001;
+    if (isMoving) input.normalize();
+  
+    const targetSpeed = sprinting ? MAX_SPEED * SPRINT_MULT : MAX_SPEED;
+  
+    // --- ACCELERATION ---
+    if (isMoving) {
+      const accel = player.grounded ? MOVE_ACCEL : MOVE_ACCEL * AIR_CONTROL;
+      player.velocity.x += input.x * accel * dt;
+      player.velocity.z += input.z * accel * dt;
+    } else {
+      const friction = player.grounded ? MOVE_FRICTION : MOVE_FRICTION * 0.1;
+      player.velocity.x -= player.velocity.x * friction * dt;
+      player.velocity.z -= player.velocity.z * friction * dt;
     }
-
-    player.verticalVelocity -= GRAVITY * dt;
-    let nextY = player.position.y + player.verticalVelocity * dt;
-    const verticalTest = new BABYLON.Vector3(player.position.x, nextY, player.position.z);
-
-    if (player.verticalVelocity <= 0) {
-      const groundY = findGroundYAt(player.position.x, player.position.y + PLAYER_HALF_HEIGHT + 0.5, player.position.z);
-      const desiredY = groundY === null ? -Infinity : groundY + PLAYER_HALF_HEIGHT + PLAYER_CLEARANCE;
-      if (nextY <= desiredY) {
-        nextY = desiredY;
-        player.verticalVelocity = 0;
+  
+    // Clamp horizontal speed
+    const horizontalSpeed = Math.sqrt(player.velocity.x**2 + player.velocity.z**2);
+    if (horizontalSpeed > targetSpeed) {
+      const scale = targetSpeed / horizontalSpeed;
+      player.velocity.x *= scale;
+      player.velocity.z *= scale;
+    }
+  
+    // --- GRAVITY ---
+    if (!player.grounded) {
+      player.velocity.y -= GRAVITY * dt;
+    }
+  
+    // --- JUMP ---
+    if (pressed.has(" ") && player.grounded) {
+      player.velocity.y = JUMP_FORCE;
+      player.grounded = false;
+    }
+  
+    // --- APPLY MOVEMENT ---
+    const nextPos = player.position.add(player.velocity.scale(dt));
+  
+    // --- STEP HEIGHT CHECK ---
+    const horizontalTest = new BABYLON.Vector3(nextPos.x, player.position.y, nextPos.z);
+  
+    if (collidesAt(horizontalTest)) {
+      const stepped = new BABYLON.Vector3(nextPos.x, player.position.y + STEP_HEIGHT, nextPos.z);
+      if (!collidesAt(stepped)) {
+        player.position.copyFrom(stepped);
+      }
+    } else {
+      player.position.x = nextPos.x;
+      player.position.z = nextPos.z;
+    }
+  
+    // --- GROUND SNAP ---
+    const ground = getGroundInfo(player.position);
+  
+    if (ground) {
+      const desiredY = ground.y + PLAYER_HALF_HEIGHT + PLAYER_CLEARANCE;
+  
+      const slopeDot = ground.normal.dot(BABYLON.Vector3.Up());
+  
+      if (slopeDot > MAX_SLOPE_DOT && player.velocity.y <= 0) {
+        player.position.y = desiredY;
+        player.velocity.y = -GROUND_STICK_FORCE;
         player.grounded = true;
+        player.groundNormal = ground.normal;
       } else {
         player.grounded = false;
       }
-    } else if (collidesAt(verticalTest)) {
-      player.verticalVelocity = 0;
-      const preferredEscape = moveDir ?? lastBuildAwayDirection ?? forward.scale(-1);
-      tryResolveLateralClip(player, preferredEscape, 0.08);
     } else {
       player.grounded = false;
     }
-
-    player.position.y = nextY;
-
-    if (isMining || isBuilding) {
-      const pick = pickFromCrosshair((mesh) => mesh?.metadata?.terrainChunk === true);
-      if (pick?.hit && pick.pickedPoint) {
-        const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
-        const offsetPoint = isBuilding
-          ? pick.pickedPoint.add(normal.scale(0.8))
-          : pick.pickedPoint.subtract(normal.scale(0.45));
-
-        modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
-
-        if (isBuilding) {
-          const awayFromBuild = player.position.subtract(offsetPoint);
-          if (awayFromBuild.lengthSquared() > 1e-6) {
-            awayFromBuild.normalize();
-            lastBuildAwayDirection = awayFromBuild;
-          }
-
-          buildPushFramesRemaining = BUILD_PUSH_GRACE_FRAMES;
-
-          const dx = offsetPoint.x - player.position.x;
-          const dz = offsetPoint.z - player.position.z;
-          const nearFeet = dx * dx + dz * dz < Math.pow(PLAYER_RADIUS + brushRadius * 0.7, 2)
-            && offsetPoint.y <= player.position.y + PLAYER_HALF_HEIGHT;
-          if (nearFeet) {
-            player.verticalVelocity = Math.max(player.verticalVelocity, 1.8 + brushStrength * 0.55);
-            player.position.addInPlace((lastBuildAwayDirection ?? new BABYLON.Vector3(0, 0, 0)).scale(0.02));
-            player.position.y += 0.02 + brushStrength * 0.008;
-          }
-
-          rebuildDirtyChunks(scene, Infinity);
-          pushPlayerAboveTerrain(player, brushStrength, dt, true, lastBuildAwayDirection);
-        }
-      }
+  
+    if (!player.grounded) {
+      player.position.y += player.velocity.y * dt;
     }
-
-    rebuildDirtyChunks(scene, isMining || isBuilding ? 8 : 2);
-
-    const pushActive = isBuilding || buildPushFramesRemaining > 0;
-    if (pushActive) {
-      pushPlayerAboveTerrain(player, isBuilding ? brushStrength : brushStrength * 0.7, dt, true, lastBuildAwayDirection);
-    }
-
-    const penetration = samplePlayerPenetration(player.position);
-    if (penetration.coverage > 0.34) {
-      const preferredEscape = moveDir ?? lastBuildAwayDirection ?? forward.scale(-1);
-      if (tryResolveLateralClip(player, preferredEscape, 0.075)) {
-        player.position.y += 0.015;
-      }
-    }
-
-    if (buildPushFramesRemaining > 0 && !isBuilding) buildPushFramesRemaining -= 1;
-    if (buildPushFramesRemaining === 0 && !isBuilding) lastBuildAwayDirection = null;
-
+  
     camera.position.copyFrom(player.position).addInPlace(new BABYLON.Vector3(0, PLAYER_EYE_HEIGHT, 0));
-    updateStats(brushRadius, brushStrength);
   });
 
   return scene;
