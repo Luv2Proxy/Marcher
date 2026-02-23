@@ -475,6 +475,30 @@ window.addEventListener("keydown", (event) => {
   updateStats();
 });
 
+function tryStep(originalPos, axis) {
+  const stepHeight = 0.4;
+
+  const testPos = originalPos.clone();
+  camera.position.copyFrom(testPos);
+
+  // attempt small lift
+  camera.position.y += stepHeight;
+
+  // check full capsule
+  if (!capsuleCollides(camera.position)) {
+    // now check that we're not pushing into ceiling
+    const headCheck = camera.position.clone();
+    headCheck.y += 0.05;
+
+    if (!capsuleCollides(headCheck)) {
+      return true; // valid step
+    }
+  }
+
+  camera.position.copyFrom(originalPos);
+  return false;
+}
+
 window.addEventListener("keyup", (event) => {
   if (event.key.toLowerCase() === "shift") sprinting = false;
 });
@@ -485,27 +509,35 @@ scene.onBeforeRenderObservable.add(() => {
   const baseSpeed = scene.getEngine().isPointerLock ? 6.5 : 4.5;
   const moveSpeed = sprinting ? baseSpeed * 1.8 : baseSpeed;
 
-  const input = camera.getDirection(BABYLON.Vector3.Forward()).scale(camera._keys.length ? moveSpeed * dt : 0);
-
   const prev = camera.position.clone();
 
-  // --- Gravity ---
+  // -------------------------
+  // Gravity
+  // -------------------------
   verticalVelocity -= gravity * dt;
   camera.position.y += verticalVelocity * dt;
 
-  // --- Vertical Resolve ---
+  // -------------------------
+  // Vertical Collision
+  // -------------------------
   if (capsuleCollides(camera.position)) {
     if (verticalVelocity <= 0) {
-      // landed
       onGround = true;
       verticalVelocity = 0;
 
-      // snap upward slightly
-      for (let i = 0; i < 12 && capsuleCollides(camera.position); i++) {
+      // Snap upward gently (no teleporting)
+      let correction = 0;
+      while (capsuleCollides(camera.position) && correction < 0.6) {
         camera.position.y += 0.04;
+        correction += 0.04;
+      }
+
+      // Hard clamp to prevent launch-to-surface bug
+      if (camera.position.y > prev.y + 0.6) {
+        camera.position.y = prev.y;
       }
     } else {
-      // head hit
+      // Head hit ceiling
       verticalVelocity = 0;
       camera.position.y = prev.y;
     }
@@ -513,41 +545,74 @@ scene.onBeforeRenderObservable.add(() => {
     onGround = false;
   }
 
-  // --- Horizontal Axis Separation (STRONG WALL COLLISION) ---
+  // -------------------------
+  // Horizontal Desired Position
+  // -------------------------
   const desired = camera.position.clone();
 
-  // X axis
+  const stepHeight = 0.4;
+
+  // -------------------------
+  // X Axis Resolve
+  // -------------------------
   camera.position.x = desired.x;
   camera.position.z = prev.z;
+
   if (capsuleCollides(camera.position)) {
-    // try step-up
-    const stepHeight = 0.35;
+    const attempt = camera.position.clone();
+
+    // Try stepping up
     camera.position.y += stepHeight;
+
     if (!capsuleCollides(camera.position)) {
-      // stepped
+      // Ensure no ceiling conflict
+      const headTest = camera.position.clone();
+      headTest.y += 0.05;
+
+      if (capsuleCollides(headTest)) {
+        camera.position.copyFrom(attempt);
+        camera.position.x = prev.x;
+      }
     } else {
-      camera.position.y -= stepHeight;
+      camera.position.copyFrom(attempt);
       camera.position.x = prev.x;
     }
   }
 
-  // Z axis
-  camera.position.x = camera.position.x;
+  // -------------------------
+  // Z Axis Resolve
+  // -------------------------
   camera.position.z = desired.z;
+
   if (capsuleCollides(camera.position)) {
-    const stepHeight = 0.35;
+    const attempt = camera.position.clone();
+
     camera.position.y += stepHeight;
+
     if (!capsuleCollides(camera.position)) {
-      // stepped
+      const headTest = camera.position.clone();
+      headTest.y += 0.05;
+
+      if (capsuleCollides(headTest)) {
+        camera.position.copyFrom(attempt);
+        camera.position.z = prev.z;
+      }
     } else {
-      camera.position.y -= stepHeight;
+      camera.position.copyFrom(attempt);
       camera.position.z = prev.z;
     }
   }
 
-  // --- Mining / Building ---
+  // -------------------------
+  // Mining / Building
+  // -------------------------
   if (isMining || isBuilding) {
-    const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => m?.metadata?.terrainChunk);
+    const pick = scene.pick(
+      scene.pointerX,
+      scene.pointerY,
+      (m) => m?.metadata?.terrainChunk === true
+    );
+
     if (pick?.hit && pick.pickedPoint) {
       const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
 
@@ -555,7 +620,11 @@ scene.onBeforeRenderObservable.add(() => {
         ? pick.pickedPoint.add(normal.scale(0.8))
         : pick.pickedPoint.subtract(normal.scale(0.45));
 
-      modifyField(offsetPoint, brushRadius, isMining ? -brushStrength : brushStrength);
+      modifyField(
+        offsetPoint,
+        brushRadius,
+        isMining ? -brushStrength : brushStrength
+      );
     }
   }
 
