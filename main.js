@@ -1,4 +1,4 @@
-@ -40,6 +40,68 @@ const statsEl = document.getElementById("stats");
+const statsEl = document.getElementById("stats");
 const getIndex = (x, y, z) => x + FIELD_SIZE.x * (y + FIELD_SIZE.y * z);
 const chunkKey = (x, y, z) => `${x},${y},${z}`;
 
