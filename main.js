@@ -42,10 +42,7 @@ const chunkKey = (x, y, z) => `${x},${y},${z}`;
 
 const playerRadius = 0.35;
 const playerHeight = 1.75;
-const gravity = 26;
-const jumpSpeed = 8.8;
-let verticalVelocity = 0;
-let onGround = false;
+
 
 const clamp = (v, mn, mx) => Math.max(mn, Math.min(mx, v));
 
@@ -84,54 +81,7 @@ function sampleDensity(x, y, z) {
   return c0 * (1 - tz) + c1 * tz;
 }
 
-function resolvePlayerInsideTerrain() {
-  if (!capsuleCollides(camera.position)) return;
 
-  let push = 0;
-  const maxPush = 1.5; // max escape height
-  const step = 0.02;
-
-  while (capsuleCollides(camera.position) && push < maxPush) {
-    camera.position.y += step;
-    push += step;
-  }
-
-  if (push > 0) {
-    verticalVelocity = 0;
-    onGround = true;
-  }
-}
-
-function capsuleCollides(pos) {
-  const steps = 6; // vertical samples
-  const bottom = pos.y - playerHeight;
-  const top = pos.y - 0.1;
-
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const y = bottom + (top - bottom) * t;
-
-    const probes = [
-      [0, 0],
-      [playerRadius, 0],
-      [-playerRadius, 0],
-      [0, playerRadius],
-      [0, -playerRadius],
-      [playerRadius * 0.7, playerRadius * 0.7],
-      [-playerRadius * 0.7, playerRadius * 0.7],
-      [playerRadius * 0.7, -playerRadius * 0.7],
-      [-playerRadius * 0.7, -playerRadius * 0.7],
-    ];
-
-    for (const [ox, oz] of probes) {
-      if (sampleDensity(pos.x + ox, y, pos.z + oz) >= ISO_LEVEL) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
 
 const pseudoNoise = (x, y, z) => {
   const a = Math.sin(x * 0.13 + z * 0.07) * 0.6;
@@ -284,6 +234,23 @@ function buildChunkMesh(chunk) {
   vd.colors = colors;
   vd.applyToMesh(chunk.mesh, true);
 
+  // Dispose old physics if exists
+  if (chunk.mesh.physicsBody) {
+    chunk.mesh.physicsBody.dispose();
+  }
+  
+  chunk.mesh.physicsBody = new BABYLON.PhysicsBody(
+    chunk.mesh,
+    BABYLON.PhysicsMotionType.STATIC,
+    false,
+    scene
+  );
+  
+  chunk.mesh.physicsShape = new BABYLON.PhysicsShapeMesh(
+    chunk.mesh,
+    scene
+  );
+
   chunk.mesh.isPickable = true;
   chunk.mesh.receiveShadows = false;
   chunk.triangleCount = indices.length / 3;
@@ -414,6 +381,16 @@ scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
 scene.fogDensity = 0.008;
 scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
 
+// ---------------------------
+// HAVOK PHYSICS
+// ---------------------------
+let hk;
+(async () => {
+  const havokInstance = await HavokPhysics();
+  hk = new BABYLON.HavokPlugin(true, havokInstance);
+  scene.enablePhysics(new BABYLON.Vector3(0, -9.81, 0), hk);
+})();
+
 const camera = new BABYLON.UniversalCamera(
   "cam",
   new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5),
@@ -428,6 +405,35 @@ camera.keysDown = [83];
 camera.keysLeft = [65];
 camera.keysRight = [68];
 camera.attachControl(canvas, true);
+
+// ---------------------------
+// PLAYER PHYSICS BODY
+// ---------------------------
+const playerCapsule = BABYLON.MeshBuilder.CreateCapsule("player", {
+  height: playerHeight,
+  radius: playerRadius
+}, scene);
+
+playerCapsule.isVisible = false;
+playerCapsule.position.copyFrom(camera.position);
+
+playerCapsule.physicsBody = new BABYLON.PhysicsBody(
+  playerCapsule,
+  BABYLON.PhysicsMotionType.DYNAMIC,
+  false,
+  scene
+);
+
+playerCapsule.physicsShape = new BABYLON.PhysicsShapeCapsule(
+  new BABYLON.Vector3(0, -playerHeight / 2 + playerRadius, 0),
+  new BABYLON.Vector3(0, playerHeight / 2 - playerRadius, 0),
+  playerRadius,
+  scene
+);
+
+playerCapsule.physicsBody.setMassProperties({ mass: 70 });
+playerCapsule.physicsBody.setLinearDamping(0.9);
+playerCapsule.physicsBody.setAngularDamping(1);
 
 const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
 hemi.intensity = 0.55;
@@ -477,9 +483,14 @@ window.addEventListener("pointerup", (event) => {
 window.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
   if (key === "shift") sprinting = true;
-  if (key === " " && onGround) {
-    verticalVelocity = jumpSpeed;
-    onGround = false;
+  if (key === " ") {
+    const vel = playerCapsule.physicsBody.getLinearVelocity();
+    if (Math.abs(vel.y) < 0.05) {
+      playerCapsule.physicsBody.applyImpulse(
+        new BABYLON.Vector3(0, 8, 0),
+        playerCapsule.position
+      );
+    }
   }
   if (key === "q") brushRadius = Math.max(1, brushRadius - 0.35);
   if (key === "e") brushRadius = Math.min(8, brushRadius + 0.35);
@@ -493,173 +504,83 @@ window.addEventListener("keydown", (event) => {
   updateStats();
 });
 
-function tryStep(originalPos, axis) {
-  const stepHeight = 0.4;
-
-  const testPos = originalPos.clone();
-  camera.position.copyFrom(testPos);
-
-  // attempt small lift
-  camera.position.y += stepHeight;
-
-  // check full capsule
-  if (!capsuleCollides(camera.position)) {
-    // now check that we're not pushing into ceiling
-    const headCheck = camera.position.clone();
-    headCheck.y += 0.05;
-
-    if (!capsuleCollides(headCheck)) {
-      return true; // valid step
-    }
-  }
-
-  camera.position.copyFrom(originalPos);
-  return false;
-}
-
 window.addEventListener("keyup", (event) => {
   if (event.key.toLowerCase() === "shift") sprinting = false;
 });
 
 scene.onBeforeRenderObservable.add(() => {
-  const dt = engine.getDeltaTime() * 0.001;
 
-  const prev = camera.position.clone();
+  // ---------------------------
+  // SYNC CAMERA TO PHYSICS BODY
+  // ---------------------------
+  camera.position.copyFrom(playerCapsule.position);
 
-  // -------------------------
-  // GRAVITY
-  // -------------------------
-  verticalVelocity -= gravity * dt;
-  camera.position.y += verticalVelocity * dt;
+  // ---------------------------
+  // MOVEMENT USING FORCE
+  // ---------------------------
+  const forward = camera.getDirection(BABYLON.Axis.Z);
+  const right = camera.getDirection(BABYLON.Axis.X);
 
-  // -------------------------
-  // VERTICAL COLLISION
-  // -------------------------
-  if (capsuleCollides(camera.position)) {
-    if (verticalVelocity <= 0) {
-      // Falling onto ground
-      onGround = true;
-      verticalVelocity = 0;
+  let move = BABYLON.Vector3.Zero();
 
-      // Precise upward correction (no climbing)
-      let push = 0;
-      const maxPush = 0.25; // small only
-      while (capsuleCollides(camera.position) && push < maxPush) {
-        camera.position.y += 0.01;
-        push += 0.01;
-      }
+  if (camera._keys && camera._keys.indexOf(87) !== -1) move.addInPlace(forward);
+  if (camera._keys && camera._keys.indexOf(83) !== -1) move.subtractInPlace(forward);
+  if (camera._keys && camera._keys.indexOf(65) !== -1) move.subtractInPlace(right);
+  if (camera._keys && camera._keys.indexOf(68) !== -1) move.addInPlace(right);
 
-      // If still colliding, revert fully
-      if (capsuleCollides(camera.position)) {
-        camera.position.y = prev.y;
-      }
+  move.y = 0;
 
-    } else {
-      // Hit ceiling
-      verticalVelocity = 0;
-      camera.position.y = prev.y;
-    }
-  } else {
-    onGround = false;
+  if (move.lengthSquared() > 0) {
+    move.normalize();
+    playerCapsule.physicsBody.applyForce(
+      move.scale(sprinting ? 180 : 120),
+      playerCapsule.position
+    );
   }
 
-  // -------------------------
-  // HORIZONTAL MOVEMENT
-  // -------------------------
-  const desired = camera.position.clone();
-  const stepHeight = 0.4;
-
-  // ---- X Axis ----
-  camera.position.x = desired.x;
-  camera.position.z = prev.z;
-
-  if (capsuleCollides(camera.position)) {
-    const original = camera.position.clone();
-
-    // Attempt step
-    camera.position.y += stepHeight;
-
-    if (
-      !capsuleCollides(camera.position) &&
-      !capsuleCollides(
-        new BABYLON.Vector3(
-          camera.position.x,
-          camera.position.y + 0.05,
-          camera.position.z
-        )
-      )
-    ) {
-      // successful step
-    } else {
-      camera.position.copyFrom(original);
-      camera.position.x = prev.x;
-    }
-  }
-
-  // ---- Z Axis ----
-  camera.position.z = desired.z;
-
-  if (capsuleCollides(camera.position)) {
-    const original = camera.position.clone();
-
-    camera.position.y += stepHeight;
-
-    if (
-      !capsuleCollides(camera.position) &&
-      !capsuleCollides(
-        new BABYLON.Vector3(
-          camera.position.x,
-          camera.position.y + 0.05,
-          camera.position.z
-        )
-      )
-    ) {
-      // successful step
-    } else {
-      camera.position.copyFrom(original);
-      camera.position.z = prev.z;
-    }
-  }
-
-  // -------------------------
-  // MINING / BUILDING (True Center Ray)
-  // -------------------------
+  // ---------------------------
+  // MINING / BUILDING
+  // ---------------------------
   if (isMining || isBuilding) {
-  
-    const rayLength = 6;
-  
-    // exact screen center
+
     const ray = scene.createPickingRay(
       engine.getRenderWidth() * 0.5,
       engine.getRenderHeight() * 0.5,
       BABYLON.Matrix.Identity(),
-      camera,
-      false
+      camera
     );
-  
-    ray.length = rayLength;
-  
+
+    ray.length = 6;
+
     const pick = scene.pickWithRay(
       ray,
       (m) => m?.metadata?.terrainChunk === true
     );
-  
+
     if (pick?.hit && pick.pickedPoint) {
-  
+
       const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
-  
+
       const offsetPoint = isBuilding
         ? pick.pickedPoint.add(normal.scale(brushRadius * 0.5))
         : pick.pickedPoint.subtract(normal.scale(brushRadius * 0.5));
-  
+
       modifyField(
         offsetPoint,
         brushRadius,
         isMining ? -brushStrength : brushStrength
       );
-      resolvePlayerInsideTerrain();
+
+      // 🔥 REAL FORCE PUSH (interpolated + physical)
+      if (isBuilding) {
+        playerCapsule.physicsBody.applyImpulse(
+          normal.scale(10),
+          playerCapsule.position
+        );
+      }
     }
   }
+
   rebuildDirtyChunks(2);
   updateStats();
 });
