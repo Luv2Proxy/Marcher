@@ -9,6 +9,10 @@ const CHUNK_SIZE = 14;
 const field = new Float32Array(FIELD_SIZE.x * FIELD_SIZE.y * FIELD_SIZE.z);
 const chunks = new Map();
 const dirtyChunks = new Set();
+const terrainMaterial = new BABYLON.StandardMaterial("terrainMat", scene);
+terrainMaterial.diffuseTexture = createGroundTexture(scene);
+terrainMaterial.specularColor = BABYLON.Color3.Black();
+terrainMaterial.useVertexColors = true;
 
 const tetrahedra = [
   [0, 5, 1, 6],
@@ -188,7 +192,7 @@ function polygonizeTetra(points, values, positions, indices) {
   emitTriangle(b, c, d);
 }
 
-function buildChunkMesh(chunk) {
+function buildChunkMesh(chunk, scene) {
   const positions = [];
   const indices = [];
 
@@ -256,12 +260,12 @@ function buildChunkMesh(chunk) {
   chunk.triangleCount = indices.length / 3;
 }
 
-function rebuildDirtyChunks(maxPerFrame = Infinity) {
+function rebuildDirtyChunks(scene, maxPerFrame = Infinity) {
   let built = 0;
   for (const key of dirtyChunks) {
     const chunk = chunks.get(key);
     if (!chunk) continue;
-    buildChunkMesh(chunk);
+    buildChunkMesh(chunk, scene);
     dirtyChunks.delete(key);
     built += 1;
     if (built >= maxPerFrame) break;
@@ -375,215 +379,117 @@ function updateStats() {
   statsEl.textContent = `Triangles: ${totalTriangles().toLocaleString()} · Chunks dirty: ${dirtyChunks.size} · Brush radius: ${brushRadius.toFixed(1)} · Strength: ${brushStrength.toFixed(2)}`;
 }
 
-const scene = new BABYLON.Scene(engine);
-scene.clearColor = new BABYLON.Color4(0.53, 0.74, 0.93, 1);
-scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
-scene.fogDensity = 0.008;
-scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
+async function createScene() {
 
-// ---------------------------
-// HAVOK PHYSICS
-// ---------------------------
-let hk;
-(async () => {
+  const scene = new BABYLON.Scene(engine);
+
+  scene.clearColor = new BABYLON.Color4(0.53, 0.74, 0.93, 1);
+  scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+  scene.fogDensity = 0.008;
+  scene.fogColor = new BABYLON.Color3(0.5, 0.7, 0.92);
+
+  // ---------------------------
+  // ENABLE HAVOK FIRST
+  // ---------------------------
   const havokInstance = await HavokPhysics();
-  hk = new BABYLON.HavokPlugin(true, havokInstance);
+  const hk = new BABYLON.HavokPlugin(true, havokInstance);
   scene.enablePhysics(new BABYLON.Vector3(0, -9.81, 0), hk);
-})();
 
-const camera = new BABYLON.UniversalCamera(
-  "cam",
-  new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.75, FIELD_SIZE.z * 0.5),
-  scene,
-);
-camera.setTarget(new BABYLON.Vector3(FIELD_SIZE.x * 0.5, FIELD_SIZE.y * 0.45, FIELD_SIZE.z * 0.6));
-camera.speed = 0.55;
-camera.minZ = 0.1;
-camera.maxZ = 200;
-camera.keysUp = [87];
-camera.keysDown = [83];
-camera.keysLeft = [65];
-camera.keysRight = [68];
-camera.attachControl(canvas, true);
+  // ---------------------------
+  // CAMERA
+  // ---------------------------
+  const camera = new BABYLON.UniversalCamera(
+    "cam",
+    new BABYLON.Vector3(
+      FIELD_SIZE.x * 0.5,
+      FIELD_SIZE.y * 0.75,
+      FIELD_SIZE.z * 0.5
+    ),
+    scene
+  );
 
-// ---------------------------
-// PLAYER PHYSICS BODY
-// ---------------------------
-const playerCapsule = BABYLON.MeshBuilder.CreateCapsule("player", {
-  height: playerHeight,
-  radius: playerRadius
-}, scene);
+  camera.attachControl(canvas, true);
 
-playerCapsule.isVisible = false;
-playerCapsule.position.copyFrom(camera.position);
+  // ---------------------------
+  // PLAYER CAPSULE
+  // ---------------------------
+  const playerCapsule = BABYLON.MeshBuilder.CreateCapsule("player", {
+    height: playerHeight,
+    radius: playerRadius
+  }, scene);
 
-playerCapsule.physicsBody = new BABYLON.PhysicsBody(
-  playerCapsule,
-  BABYLON.PhysicsMotionType.DYNAMIC,
-  false,
-  scene
-);
+  playerCapsule.isVisible = false;
 
-playerCapsule.physicsShape = new BABYLON.PhysicsShapeCapsule(
-  new BABYLON.Vector3(0, -playerHeight / 2 + playerRadius, 0),
-  new BABYLON.Vector3(0, playerHeight / 2 - playerRadius, 0),
-  playerRadius,
-  scene
-);
+  playerCapsule.physicsBody = new BABYLON.PhysicsBody(
+    playerCapsule,
+    BABYLON.PhysicsMotionType.DYNAMIC,
+    false,
+    scene
+  );
 
-playerCapsule.physicsBody.setMassProperties({ mass: 70 });
-playerCapsule.physicsBody.setLinearDamping(0.9);
-playerCapsule.physicsBody.setAngularDamping(1);
+  playerCapsule.physicsShape = new BABYLON.PhysicsShapeCapsule(
+    new BABYLON.Vector3(0, -playerHeight / 2 + playerRadius, 0),
+    new BABYLON.Vector3(0, playerHeight / 2 - playerRadius, 0),
+    playerRadius,
+    scene
+  );
 
-const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
-hemi.intensity = 0.55;
+  playerCapsule.physicsBody.setMassProperties({ mass: 70 });
+  playerCapsule.physicsBody.setLinearDamping(0.9);
+  playerCapsule.physicsBody.setAngularDamping(1);
 
-const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.4, -1, 0.2), scene);
-sun.position = new BABYLON.Vector3(70, 100, -40);
-sun.intensity = 0.8;
+  // ---------------------------
+  // LIGHTS
+  // ---------------------------
+  new BABYLON.HemisphericLight("hemi",
+    new BABYLON.Vector3(0.2, 1, 0.1),
+    scene
+  );
 
-const terrainMaterial = new BABYLON.StandardMaterial("terrainMat", scene);
-terrainMaterial.specularColor = new BABYLON.Color3(0.04, 0.04, 0.04);
-terrainMaterial.ambientColor = new BABYLON.Color3(0.45, 0.45, 0.45);
-terrainMaterial.useVertexColor = true;
-terrainMaterial.diffuseTexture = createGroundTexture(scene);
-terrainMaterial.diffuseTexture.level = 0.9;
-terrainMaterial.backFaceCulling = false;
-terrainMaterial.twoSidedLighting = true;
+  // ---------------------------
+  // TERRAIN INIT
+  // ---------------------------
+  regenerateField();
+  createChunks(scene, terrainMaterial);
+  markAllChunksDirty();
+  rebuildDirtyChunks(scene, Infinity);
 
-const sky = BABYLON.MeshBuilder.CreateSphere("sky", { diameter: 500, sideOrientation: BABYLON.Mesh.BACKSIDE }, scene);
-const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
-skyMat.disableLighting = true;
-skyMat.emissiveColor = new BABYLON.Color3(0.42, 0.66, 0.95);
-sky.material = skyMat;
+  // ---------------------------
+  // GAME LOOP
+  // ---------------------------
+  scene.onBeforeRenderObservable.add(() => {
 
-let brushRadius = 2.7;
-let brushStrength = 1.05;
+    camera.position.copyFrom(playerCapsule.position);
 
-regenerateField();
-createChunks(scene, terrainMaterial);
-markAllChunksDirty();
-rebuildDirtyChunks(Infinity);
+    // movement
+    const forward = camera.getDirection(BABYLON.Axis.Z);
+    const right = camera.getDirection(BABYLON.Axis.X);
 
-let isMining = false;
-let isBuilding = false;
-let sprinting = false;
+    let move = BABYLON.Vector3.Zero();
 
-window.addEventListener("contextmenu", (event) => event.preventDefault());
-window.addEventListener("pointerdown", (event) => {
-  if (event.button === 0) isMining = true;
-  if (event.button === 2) isBuilding = true;
-  canvas.requestPointerLock();
-});
-window.addEventListener("pointerup", (event) => {
-  if (event.button === 0) isMining = false;
-  if (event.button === 2) isBuilding = false;
-});
+    if (camera._keys?.includes(87)) move.addInPlace(forward);
+    if (camera._keys?.includes(83)) move.subtractInPlace(forward);
+    if (camera._keys?.includes(65)) move.subtractInPlace(right);
+    if (camera._keys?.includes(68)) move.addInPlace(right);
 
-window.addEventListener("keydown", (event) => {
-  const key = event.key.toLowerCase();
-  if (key === "shift") sprinting = true;
-  if (key === " ") {
-    const vel = playerCapsule.physicsBody.getLinearVelocity();
-    if (Math.abs(vel.y) < 0.05) {
-      playerCapsule.physicsBody.applyImpulse(
-        new BABYLON.Vector3(0, 8, 0),
+    move.y = 0;
+
+    if (move.lengthSquared() > 0) {
+      move.normalize();
+      playerCapsule.physicsBody.applyForce(
+        move.scale(120),
         playerCapsule.position
       );
     }
-  }
-  if (key === "q") brushRadius = Math.max(1, brushRadius - 0.35);
-  if (key === "e") brushRadius = Math.min(8, brushRadius + 0.35);
-  if (key === "z") brushStrength = Math.max(0.2, brushStrength - 0.1);
-  if (key === "x") brushStrength = Math.min(3, brushStrength + 0.1);
-  if (key === "r") {
-    regenerateField();
-    markAllChunksDirty();
-    rebuildDirtyChunks(Infinity);
-  }
-  updateStats();
+
+    rebuildDirtyChunks(scene, 2);
+  });
+
+  return scene;
+}
+
+createScene().then(scene => {
+  engine.runRenderLoop(() => scene.render());
 });
 
-window.addEventListener("keyup", (event) => {
-  if (event.key.toLowerCase() === "shift") sprinting = false;
-});
-
-scene.onBeforeRenderObservable.add(() => {
-
-  // ---------------------------
-  // SYNC CAMERA TO PHYSICS BODY
-  // ---------------------------
-  camera.position.copyFrom(playerCapsule.position);
-
-  // ---------------------------
-  // MOVEMENT USING FORCE
-  // ---------------------------
-  const forward = camera.getDirection(BABYLON.Axis.Z);
-  const right = camera.getDirection(BABYLON.Axis.X);
-
-  let move = BABYLON.Vector3.Zero();
-
-  if (camera._keys && camera._keys.indexOf(87) !== -1) move.addInPlace(forward);
-  if (camera._keys && camera._keys.indexOf(83) !== -1) move.subtractInPlace(forward);
-  if (camera._keys && camera._keys.indexOf(65) !== -1) move.subtractInPlace(right);
-  if (camera._keys && camera._keys.indexOf(68) !== -1) move.addInPlace(right);
-
-  move.y = 0;
-
-  if (move.lengthSquared() > 0) {
-    move.normalize();
-    playerCapsule.physicsBody.applyForce(
-      move.scale(sprinting ? 180 : 120),
-      playerCapsule.position
-    );
-  }
-
-  // ---------------------------
-  // MINING / BUILDING
-  // ---------------------------
-  if (isMining || isBuilding) {
-
-    const ray = scene.createPickingRay(
-      engine.getRenderWidth() * 0.5,
-      engine.getRenderHeight() * 0.5,
-      BABYLON.Matrix.Identity(),
-      camera
-    );
-
-    ray.length = 6;
-
-    const pick = scene.pickWithRay(
-      ray,
-      (m) => m?.metadata?.terrainChunk === true
-    );
-
-    if (pick?.hit && pick.pickedPoint) {
-
-      const normal = pick.getNormal(true) ?? BABYLON.Vector3.Up();
-
-      const offsetPoint = isBuilding
-        ? pick.pickedPoint.add(normal.scale(brushRadius * 0.5))
-        : pick.pickedPoint.subtract(normal.scale(brushRadius * 0.5));
-
-      modifyField(
-        offsetPoint,
-        brushRadius,
-        isMining ? -brushStrength : brushStrength
-      );
-
-      // 🔥 REAL FORCE PUSH (interpolated + physical)
-      if (isBuilding) {
-        playerCapsule.physicsBody.applyImpulse(
-          normal.scale(10),
-          playerCapsule.position
-        );
-      }
-    }
-  }
-
-  rebuildDirtyChunks(2);
-  updateStats();
-});
-
-engine.runRenderLoop(() => scene.render());
 window.addEventListener("resize", () => engine.resize());
