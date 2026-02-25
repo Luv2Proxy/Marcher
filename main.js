@@ -9,10 +9,6 @@ const CHUNK_SIZE = 14;
 const field = new Float32Array(FIELD_SIZE.x * FIELD_SIZE.y * FIELD_SIZE.z);
 const chunks = new Map();
 const dirtyChunks = new Set();
-const terrainMaterial = new BABYLON.StandardMaterial("terrainMat", scene);
-terrainMaterial.diffuseTexture = createGroundTexture(scene);
-terrainMaterial.specularColor = BABYLON.Color3.Black();
-terrainMaterial.useVertexColors = true;
 
 const tetrahedra = [
   [0, 5, 1, 6],
@@ -447,8 +443,13 @@ async function createScene() {
   );
 
   // ---------------------------
-  // TERRAIN INIT
+  // TERRAIN MAT + INIT
   // ---------------------------
+  const terrainMaterial = new BABYLON.StandardMaterial("terrainMat", scene);
+  terrainMaterial.diffuseTexture = createGroundTexture(scene);
+  terrainMaterial.specularColor = BABYLON.Color3.Black();
+  terrainMaterial.useVertexColors = true;
+  
   regenerateField();
   createChunks(scene, terrainMaterial);
   markAllChunksDirty();
